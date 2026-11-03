@@ -35,6 +35,7 @@ import {
   candidatePaymentsForOrder,
   countUnmatchedPayments,
   getOrderById,
+  ignoreAllUnmatchedPayments,
   linkPaymentToOrder,
   listOrders,
   listUnmatchedPayments,
@@ -264,6 +265,12 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
       details: { payment_event_id: eventId, amount_mismatch: result.amountMismatch },
     });
     return c.json({ ok: true, order: result.order, amount_mismatch: result.amountMismatch });
+  });
+
+  app.post("/payments/ignore-all", (c) => {
+    const ignored = ignoreAllUnmatchedPayments(database);
+    audit(database, "payment.ignore_all", { actor: c.get("admin").username, details: { ignored } });
+    return c.json({ ok: true, ignored });
   });
 
   app.post("/payments/:id/ignore", async (c) => {

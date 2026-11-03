@@ -114,9 +114,21 @@ export function PaymentsPage() {
         title="未匹配收款"
         description="支付宝收到了钱，但没能自动对上订单（金额付错、超时付款等）。核对后一键关联，系统会把订单改为支付成功并通知商户网站。"
       />
-      <div className="mb-4 flex gap-2">
+      <div className="mb-4 flex flex-wrap items-center gap-2">
         <Button variant={view === "pending" ? "default" : "outline"} size="sm" onClick={() => setView("pending")}>待处理{data && view === "pending" ? ` (${data.unmatched_count})` : ""}</Button>
         <Button variant={view === "ignored" ? "default" : "outline"} size="sm" onClick={() => setView("ignored")}>已忽略</Button>
+        {view === "pending" && data && data.unmatched_count > 0 ? (
+          <Button variant="ghost" size="sm" className="ml-auto" onClick={async () => {
+            if (!window.confirm(`确定忽略全部 ${data.unmatched_count} 笔待处理收款？\n忽略后不再提醒，需要时可在“已忽略”里逐条恢复或关联。`)) return;
+            try {
+              const result = await apiFetch<{ ignored: number }>("/admin-api/payments/ignore-all", { method: "POST" });
+              toast.success(`已忽略 ${result.ignored} 笔`);
+              await mutate();
+            } catch (error) {
+              toast.error(error instanceof Error ? error.message : "操作失败");
+            }
+          }}><EyeOff />全部忽略</Button>
+        ) : null}
       </div>
       {isLoading || !data ? <Loading /> : data.data.length === 0 ? (
         <Card><CardContent className="py-16 text-center text-sm text-muted">{view === "pending" ? "没有待处理的收款，一切正常" : "没有已忽略的收款"}</CardContent></Card>

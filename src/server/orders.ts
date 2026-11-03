@@ -417,6 +417,13 @@ export function setPaymentIgnored(database: AppDatabase, eventId: number, ignore
   database.query("UPDATE payment_events SET ignored_at = ? WHERE id = ?").run(ignored ? new Date().toISOString() : null, eventId);
 }
 
+export function ignoreAllUnmatchedPayments(database: AppDatabase) {
+  return database.query(`
+    UPDATE payment_events SET ignored_at = ?
+    WHERE direction = '收入' AND matched_order_id IS NULL AND ignored_at IS NULL
+  `).run(new Date().toISOString()).changes;
+}
+
 export function externalStatus(status: OrderStatus) {
   return status === "paid" || status === "late_paid" ? 1 : 0;
 }

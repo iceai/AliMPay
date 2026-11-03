@@ -7,6 +7,7 @@ import {
   countUnmatchedPayments,
   createOrder,
   getOrderById,
+  ignoreAllUnmatchedPayments,
   linkPaymentToOrder,
   recordAndMatchPayment,
   setPaymentIgnored,
@@ -89,6 +90,19 @@ describe("unmatched payments and manual linking", () => {
     expect(countUnmatchedPayments(database)).toBe(0);
     setPaymentIgnored(database, eventId, false);
     expect(countUnmatchedPayments(database)).toBe(1);
+  });
+
+  it("ignores every pending unmatched payment at once but keeps linked ones", () => {
+    ({ database } = configuredDatabase());
+    const order = createOrder(database, orderInput(1)).order;
+    expireOrder(database, order.id);
+    const linked = recordIncome(database, "LINKED", order.payable_amount_cents);
+    linkPaymentToOrder(database, linked, order.id);
+    recordIncome(database, "OLD-1", 500);
+    recordIncome(database, "OLD-2", 600);
+    expect(ignoreAllUnmatchedPayments(database)).toBe(2);
+    expect(countUnmatchedPayments(database)).toBe(0);
+    expect(database.query("SELECT ignored_at FROM payment_events WHERE account_log_id = 'LINKED'").get()).toEqual({ ignored_at: null });
   });
 });
 
