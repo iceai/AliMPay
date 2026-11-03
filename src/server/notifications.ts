@@ -5,6 +5,7 @@ import { getRuntimeEnv } from "./env";
 import { AppError } from "./errors";
 import { buildReturnParameters, getOrderById } from "./orders";
 import { assertPublicDestination, md5Sign, rsaSign, validateCallbackUrl } from "./security";
+import { enqueueAlert } from "./telegram";
 
 interface NotificationJob {
   id: string;
@@ -183,6 +184,7 @@ export class NotificationWorker {
     this.database.query(`
       UPDATE notification_jobs SET status = ?, attempts = ?, next_attempt_at = ?, last_http_status = ?, last_error = ?, updated_at = ? WHERE id = ?
     `).run(exhausted ? "failed" : "pending", attemptNumber, nextAttempt, responseStatus, errorMessage.slice(0, 1_000), completedAt, job.id);
+    if (exhausted && !job.manual) enqueueAlert(this.database, "notify_failed", job.id);
   }
 }
 

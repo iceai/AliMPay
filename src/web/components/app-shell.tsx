@@ -1,6 +1,7 @@
 import {
   Activity,
   BookOpenText,
+  CircleAlert,
   KeyRound,
   LayoutDashboard,
   LogOut,
@@ -11,8 +12,9 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { mutate } from "swr";
-import { apiFetch } from "@/web/api";
+import useSWR, { mutate } from "swr";
+import type { DashboardData } from "@/shared/contracts";
+import { apiFetch, swrFetcher } from "@/web/api";
 import { Button } from "@/web/components/ui/button";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/web/components/ui/dialog";
 import { cn } from "@/web/lib/utils";
@@ -20,6 +22,7 @@ import { cn } from "@/web/lib/utils";
 const navigation = [
   { to: "/dashboard", label: "仪表盘", icon: LayoutDashboard },
   { to: "/orders", label: "订单", icon: ReceiptText },
+  { to: "/payments", label: "未匹配收款", icon: CircleAlert },
   { to: "/settings", label: "收款配置", icon: Settings2 },
   { to: "/keys", label: "密钥中心", icon: KeyRound },
   { to: "/docs", label: "API 文档", icon: BookOpenText },
@@ -28,6 +31,8 @@ const navigation = [
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const navigate = useNavigate();
+  const { data: dashboard } = useSWR<DashboardData>("/admin-api/dashboard", swrFetcher, { refreshInterval: 15_000 });
+  const unmatched = dashboard?.unmatched_payment_count ?? 0;
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-16 items-center gap-3 border-b px-5">
@@ -50,6 +55,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           >
             <item.icon className="size-4" />
             {item.label}
+            {item.to === "/payments" && unmatched > 0 ? <span className="ml-auto rounded-full bg-destructive px-1.5 text-xs leading-5 text-background">{unmatched}</span> : null}
           </NavLink>
         ))}
       </nav>

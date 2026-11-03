@@ -78,7 +78,7 @@ function SettingsForm({ initial, refresh }: { initial: SettingsData; refresh: ()
           <div className="grid gap-3 md:grid-cols-2">
             <button type="button" onClick={() => setMode("business_qr")} className={cn("rounded-lg border p-4 text-left transition-colors", mode === "business_qr" ? "border-primary bg-primary/5" : "hover:bg-foreground/[0.025]")}>
               <div className="flex items-center justify-between"><span className="flex items-center gap-2 font-semibold"><QrCode className="size-4 text-primary" />经营码</span><Badge variant={mode === "business_qr" ? "primary" : "outline"}>{mode === "business_qr" ? "当前使用" : "推荐"}</Badge></div>
-              <p className="mt-2 text-sm leading-5 text-muted">上传支付宝经营码，订单实付金额在原价上增加 0.01–0.99 元并精确匹配。</p>
+              <p className="mt-2 text-sm leading-5 text-muted">上传支付宝经营码，订单优先按原价收款；同金额已有待支付订单时，才在原价上增加 0.01–0.99 元以区分，按实付金额精确匹配。</p>
             </button>
             <button type="button" onClick={() => setMode("transfer")} className={cn("rounded-lg border p-4 text-left transition-colors", mode === "transfer" ? "border-primary bg-primary/5" : "hover:bg-foreground/[0.025]")}>
               <div className="flex items-center justify-between"><span className="flex items-center gap-2 font-semibold"><Send className="size-4 text-primary" />转账备注</span><Badge variant={mode === "transfer" ? "primary" : "outline"}>{mode === "transfer" ? "当前使用" : "兼容模式"}</Badge></div>
@@ -174,13 +174,90 @@ function SettingsForm({ initial, refresh }: { initial: SettingsData; refresh: ()
   );
 }
 
+interface TelegramSettings {
+  enabled: boolean;
+  chat_id: string;
+  api_base: string;
+  has_token: boolean;
+}
+
+function TelegramForm({ initial, refresh }: { initial: TelegramSettings; refresh: () => Promise<unknown> }) {
+  const [enabled, setEnabled] = useState(initial.enabled);
+  const [token, setToken] = useState("");
+  const [chatId, setChatId] = useState(initial.chat_id);
+  const [apiBase, setApiBase] = useState(initial.api_base);
+  const [busy, setBusy] = useState(false);
+
+  async function persist() {
+    await apiFetch("/admin-api/telegram", {
+      method: "PUT",
+      ...jsonBody({ enabled, chat_id: chatId, api_base: apiBase, ...(token.trim() ? { bot_token: token.trim() } : {}) }),
+    });
+    setToken("");
+    await refresh();
+  }
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try { await persist(); toast.success("Telegram 设置已保存"); }
+    catch (error) { toast.error(error instanceof Error ? error.message : "保存失败"); }
+    finally { setBusy(false); }
+  }
+
+  async function test() {
+    setBusy(true);
+    try {
+      await persist();
+      await apiFetch("/admin-api/telegram/test", { method: "POST" });
+      toast.success("测试消息已发送，请查看 Telegram");
+    } catch (error) { toast.error(error instanceof Error ? error.message : "发送失败"); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <form onSubmit={save}>
+      <Card>
+        <CardHeader><CardTitle>Telegram 站长通知</CardTitle><CardDescription>出现没对上订单的收款，或商户回调重试 10 次仍失败时，发消息提醒你处理。</CardDescription></CardHeader>
+        <CardContent className="space-y-5">
+          <div className="flex items-center justify-between gap-4 rounded-md border p-4"><div><div className="text-sm font-medium">启用 Telegram 通知</div><p className="mt-1 text-xs text-muted">关闭期间产生的事件不会补发。</p></div><Switch checked={enabled} onCheckedChange={setEnabled} aria-label="启用 Telegram 通知" /></div>
+          <div className="grid gap-5 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="tg-token">Bot Token</Label>
+              <Input id="tg-token" type="password" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} placeholder={initial.has_token ? "已保存，留空则不修改" : "123456789:AA…"} />
+              <p className="text-xs leading-5 text-muted">在 Telegram 找 @BotFather 发送 /newbot 创建机器人获得。加密保存，不会再显示。</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="tg-chat">Chat ID</Label>
+              <Input id="tg-chat" value={chatId} onChange={(event) => setChatId(event.target.value.trim())} placeholder="例如 123456789" />
+              <p className="text-xs leading-5 text-muted">先给你的机器人发一条消息，再找 @userinfobot 获取自己的数字 ID；发到群组时填负数群 ID。</p>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="tg-api">Telegram API 地址</Label>
+            <Input id="tg-api" type="url" value={apiBase} onChange={(event) => setApiBase(event.target.value)} />
+            <p className="text-xs leading-5 text-muted">默认 https://api.telegram.org。服务器在中国大陆无法直连时，可填自建的反向代理地址。</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Badge variant={initial.enabled && initial.has_token && initial.chat_id ? "success" : "outline"}>{initial.enabled && initial.has_token && initial.chat_id ? "已启用" : "未启用"}</Badge>
+            <Button type="button" variant="outline" disabled={busy || (!initial.has_token && !token.trim()) || !chatId} onClick={test}>保存并发送测试消息</Button>
+            <Button disabled={busy}>保存</Button>
+          </div>
+        </CardContent>
+      </Card>
+    </form>
+  );
+}
+
 export function SettingsPage() {
   const { data, isLoading, mutate } = useSWR<SettingsData>("/admin-api/settings", swrFetcher);
-  if (isLoading || !data) return <Loading label="正在读取配置" />;
+  const telegram = useSWR<TelegramSettings>("/admin-api/telegram", swrFetcher);
+  if (isLoading || !data || !telegram.data) return <Loading label="正在读取配置" />;
   return (
     <>
-      <PageHeader title="收款配置" description="切换收款方式、配置支付宝 V3 和控制商户 API 开关。" />
+      <PageHeader title="收款配置" description="切换收款方式、配置支付宝 V3、商户 API 开关和站长通知。" />
       <SettingsForm initial={data} refresh={mutate} />
+      <div className="mt-6"><TelegramForm initial={telegram.data} refresh={telegram.mutate} /></div>
     </>
   );
 }

@@ -18,7 +18,7 @@ export function DashboardPage() {
   const metrics = [
     { label: "今日订单", value: String(data.today_order_count), note: `${data.today_paid_count} 笔已支付`, icon: ShoppingCart },
     { label: "今日实收", value: formatMoney(data.today_paid_cents), note: "按商户原始金额统计", icon: CircleDollarSign },
-    { label: "正在监控", value: String(data.active_monitors), note: "最多持续 10 分钟", icon: Clock3 },
+    { label: "正在监控", value: String(data.active_monitors), note: "10 分钟内自动匹配", icon: Clock3 },
     { label: "通知失败", value: String(data.notify_failed_count), note: "自动尝试最多 10 次", icon: Send },
   ];
 
@@ -30,7 +30,7 @@ export function DashboardPage() {
         actions={
           <Button variant="outline" onClick={async () => {
             const result = await apiFetch<{ status: string; matched: number }>("/admin-api/scans/run", { method: "POST" });
-            toast.success(result.status === "skipped" ? "当前没有需要监控的订单" : `扫描完成，匹配 ${result.matched} 笔`);
+            toast.success(result.status === "skipped" ? "最近 2 小时没有未支付订单，无需扫描" : `扫描完成，匹配 ${result.matched} 笔`);
             await mutate();
           }}><RefreshCw />立即扫描</Button>
         }
@@ -40,6 +40,13 @@ export function DashboardPage() {
         <div className="mb-6 flex flex-col gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex gap-3"><AlertTriangle className="mt-0.5 size-5 shrink-0 text-destructive" /><div><div className="text-sm font-semibold">收款配置尚未完成</div><p className="mt-1 text-sm text-muted">请配置当前收款模式所需信息，并补齐支付宝 V3 应用凭据。</p></div></div>
           <Button asChild size="sm"><Link to="/settings">前往配置</Link></Button>
+        </div>
+      ) : null}
+
+      {data.unmatched_payment_count > 0 ? (
+        <div className="mb-6 flex flex-col gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex gap-3"><AlertTriangle className="mt-0.5 size-5 shrink-0 text-destructive" /><div><div className="text-sm font-semibold">有 {data.unmatched_payment_count} 笔收款没对上订单</div><p className="mt-1 text-sm text-muted">可能是客户付错金额或超时付款，核对后一键关联即可补发通知。</p></div></div>
+          <Button asChild size="sm"><Link to="/payments">去处理</Link></Button>
         </div>
       ) : null}
 
@@ -86,7 +93,7 @@ export function DashboardPage() {
         </Card>
 
         <Card>
-          <CardHeader><CardTitle>共享扫单器</CardTitle><CardDescription>仅在存在有效监控订单时请求支付宝。</CardDescription></CardHeader>
+          <CardHeader><CardTitle>共享扫单器</CardTitle><CardDescription>订单 10 分钟内按轮询间隔查账；之后 2 小时内每分钟查一次，收录迟到的付款。</CardDescription></CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between text-sm"><span className="text-muted">当前收款模式</span><Badge variant="primary">{data.collection_mode === "business_qr" ? "经营码" : "转账备注"}</Badge></div>
             {data.last_scan ? (

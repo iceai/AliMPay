@@ -40,6 +40,7 @@ export interface DashboardData {
   pending_count: number;
   late_paid_count: number;
   notify_failed_count: number;
+  unmatched_payment_count: number;
   active_monitors: number;
   last_scan: ScanRun | null;
   recent_orders: OrderRecord[];

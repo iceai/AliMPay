@@ -145,6 +145,20 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS admin_alerts (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK(kind IN ('unmatched_payment', 'notify_failed')),
+  ref_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'sent', 'failed', 'skipped')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT NOT NULL,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(kind, ref_id)
+);
+CREATE INDEX IF NOT EXISTS idx_admin_alerts_due ON admin_alerts(status, next_attempt_at);
 `;
 
 const DEFAULT_SETTINGS: Record<string, unknown> = {
@@ -163,6 +177,9 @@ const DEFAULT_SETTINGS: Record<string, unknown> = {
   v2_platform_public_key: "",
   v2_merchant_public_key: "",
   surcharge_max_cents: 99,
+  telegram_enabled: false,
+  telegram_chat_id: "",
+  telegram_api_base: "https://api.telegram.org",
 };
 
 export function createDatabase(path = getRuntimeEnv().databasePath): AppDatabase {
@@ -186,6 +203,18 @@ export function createDatabase(path = getRuntimeEnv().databasePath): AppDatabase
         database.query("UPDATE settings SET value_json = ?, updated_at = ? WHERE key = 'transfer_link_layer'").run(JSON.stringify(migratedValue), now);
       }
       database.query("INSERT INTO schema_migrations(version, applied_at) VALUES (2, ?)").run(now);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  if (!database.query("SELECT 1 FROM schema_migrations WHERE version = 3").get()) {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      database.exec("ALTER TABLE payment_events ADD COLUMN ignored_at TEXT");
+      database.exec("CREATE INDEX IF NOT EXISTS idx_payment_events_unmatched ON payment_events(direction, matched_order_id, occurred_at DESC)");
+      database.query("INSERT INTO schema_migrations(version, applied_at) VALUES (3, ?)").run(now);
       database.exec("COMMIT");
     } catch (error) {
       database.exec("ROLLBACK");

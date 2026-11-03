@@ -14,6 +14,7 @@ export const SECRET_SETTING_KEYS = [
   "alipay_private_key",
   "v1_key",
   "v2_platform_private_key",
+  "telegram_bot_token",
 ] as const;
 export type SecretSettingKey = (typeof SECRET_SETTING_KEYS)[number];
 

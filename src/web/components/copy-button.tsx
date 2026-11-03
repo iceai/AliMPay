@@ -11,7 +11,20 @@ export function CopyButton({ value, label = "复制", ...props }: { value: strin
       size="sm"
       {...props}
       onClick={async () => {
-        await navigator.clipboard.writeText(value);
+        try {
+          await navigator.clipboard.writeText(value);
+        } catch {
+          // Some in-app mobile browsers block the Clipboard API.
+          const textarea = document.createElement("textarea");
+          textarea.value = value;
+          textarea.setAttribute("readonly", "");
+          textarea.style.position = "fixed";
+          textarea.style.opacity = "0";
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand("copy");
+          textarea.remove();
+        }
         setCopied(true);
         window.setTimeout(() => setCopied(false), 1_500);
       }}

@@ -11,6 +11,7 @@ import { KeyCenterPage } from "@/web/pages/keys";
 import { LoginPage } from "@/web/pages/login";
 import { OrderDetailPage } from "@/web/pages/order-detail";
 import { OrdersPage } from "@/web/pages/orders";
+import { PaymentsPage } from "@/web/pages/payments";
 import { SettingsPage } from "@/web/pages/settings";
 import { SetupPage } from "@/web/pages/setup";
 import { SystemPage } from "@/web/pages/system";
@@ -40,6 +41,7 @@ export function App() {
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/orders" element={<OrdersPage />} />
         <Route path="/orders/:id" element={<OrderDetailPage />} />
+        <Route path="/payments" element={<PaymentsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/keys" element={<KeyCenterPage />} />
         <Route path="/docs" element={<DocsPage />} />

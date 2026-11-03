@@ -92,7 +92,7 @@ export function createOrder(database: AppDatabase, rawInput: CreateOrderInput): 
     if (collectionMode === "business_qr") {
       const maxOffset = Math.max(1, Math.min(99, getSetting(database, "surcharge_max_cents", 99)));
       let allocated = false;
-      for (let offset = 1; offset <= maxOffset; offset += 1) {
+      for (let offset = 0; offset <= maxOffset; offset += 1) {
         const candidate = input.requestedAmountCents + offset;
         const occupied = database.query("SELECT 1 FROM amount_reservations WHERE amount_cents = ? LIMIT 1").get(candidate);
         if (!occupied) {
@@ -231,7 +231,7 @@ export function recordAndMatchPayment(database: AppDatabase, event: AccountLogEv
     const existing = database.query("SELECT matched_order_id FROM payment_events WHERE account_log_id = ?").get(event.accountLogId) as { matched_order_id: string | null } | null;
     if (existing) {
       database.exec("COMMIT");
-      return { matched: false, duplicate: true, orderId: existing.matched_order_id };
+      return { matched: false, duplicate: true, orderId: existing.matched_order_id, eventId: null };
     }
 
     let matchedOrder: OrderRecord | undefined;
@@ -245,16 +245,16 @@ export function recordAndMatchPayment(database: AppDatabase, event: AccountLogEv
       });
     }
 
-    database.query(`
+    const inserted = database.query(`
       INSERT INTO payment_events(
         account_log_id, matched_order_id, occurred_at, received_at, direction,
         amount_cents, alipay_order_no, trans_memo, other_account, raw_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+    `).get(
       event.accountLogId, matchedOrder?.id ?? null, event.occurredAt, receivedAt, event.direction,
       event.amountCents, event.alipayOrderNo || null, event.transMemo || null,
       event.otherAccount || null, JSON.stringify(event.raw),
-    );
+    ) as { id: number };
 
     if (matchedOrder) {
       const current = getOrderById(database, matchedOrder.id);
@@ -270,15 +270,151 @@ export function recordAndMatchPayment(database: AppDatabase, event: AccountLogEv
         `).run(crypto.randomUUID(), current.id, receivedAt, receivedAt, receivedAt);
       } else {
         matchedOrder = undefined;
+        database.query("UPDATE payment_events SET matched_order_id = NULL WHERE id = ?").run(inserted.id);
       }
     }
 
     database.exec("COMMIT");
-    return { matched: Boolean(matchedOrder), duplicate: false, orderId: matchedOrder?.id ?? null };
+    return { matched: Boolean(matchedOrder), duplicate: false, orderId: matchedOrder?.id ?? null, eventId: inserted.id };
   } catch (error) {
     database.exec("ROLLBACK");
     throw error;
   }
+}
+
+export const LATE_WATCH_MS = 2 * 60 * 60_000;
+
+/** Unpaid orders whose auto-match window has closed but whose late payments are still recorded for review. */
+export function getLateWatchOrders(database: AppDatabase, now = Date.now()) {
+  expireOrders(database, new Date(now).toISOString());
+  return database.query(`
+    SELECT * FROM orders
+    WHERE status IN ('pending', 'expired') AND created_at > ?
+    ORDER BY created_at ASC
+  `).all(new Date(now - LATE_WATCH_MS).toISOString()) as OrderRecord[];
+}
+
+export interface PaymentEventRecord {
+  id: number;
+  account_log_id: string;
+  matched_order_id: string | null;
+  occurred_at: string;
+  received_at: string;
+  direction: string;
+  amount_cents: number;
+  alipay_order_no: string | null;
+  trans_memo: string | null;
+  other_account: string | null;
+  ignored_at: string | null;
+}
+
+const EVENT_COLUMNS = "id, account_log_id, matched_order_id, occurred_at, received_at, direction, amount_cents, alipay_order_no, trans_memo, other_account, ignored_at";
+
+export function getPaymentEvent(database: AppDatabase, id: number) {
+  return database.query(`SELECT ${EVENT_COLUMNS} FROM payment_events WHERE id = ?`).get(id) as PaymentEventRecord | null;
+}
+
+export function listUnmatchedPayments(database: AppDatabase, options: { ignored?: boolean; limit?: number } = {}) {
+  const limit = Math.max(1, Math.min(200, options.limit ?? 100));
+  return database.query(`
+    SELECT ${EVENT_COLUMNS} FROM payment_events
+    WHERE direction = '收入' AND matched_order_id IS NULL AND ignored_at IS ${options.ignored ? "NOT NULL" : "NULL"}
+    ORDER BY occurred_at DESC LIMIT ?
+  `).all(limit) as PaymentEventRecord[];
+}
+
+export function countUnmatchedPayments(database: AppDatabase) {
+  return (database.query(`
+    SELECT COUNT(*) AS count FROM payment_events
+    WHERE direction = '收入' AND matched_order_id IS NULL AND ignored_at IS NULL
+  `).get() as { count: number }).count;
+}
+
+/** Unpaid orders that plausibly belong to a payment, most likely first. */
+export function suggestOrdersForPayment(database: AppDatabase, event: Pick<PaymentEventRecord, "occurred_at" | "amount_cents" | "trans_memo">, limit = 5) {
+  const occurred = Date.parse(event.occurred_at);
+  const orders = database.query(`
+    SELECT * FROM orders
+    WHERE status IN ('pending', 'expired') AND created_at >= ? AND created_at <= ?
+  `).all(new Date(occurred - 24 * 60 * 60_000).toISOString(), new Date(occurred + 60_000).toISOString()) as OrderRecord[];
+  const memo = event.trans_memo?.trim() ?? "";
+  const score = (order: OrderRecord) => {
+    let value = 0;
+    if (memo && memo === order.out_trade_no) value += 1_000;
+    if (order.payable_amount_cents === event.amount_cents) value += 500;
+    else if (order.requested_amount_cents === event.amount_cents) value += 400;
+    else value += Math.max(0, 100 - Math.abs(order.payable_amount_cents - event.amount_cents));
+    value -= Math.abs(occurred - Date.parse(order.created_at)) / 3_600_000;
+    return value;
+  };
+  return orders
+    .filter((order) => (memo && memo === order.out_trade_no) || Math.abs(order.payable_amount_cents - event.amount_cents) <= 100)
+    .map((order) => ({ order, score: score(order) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(({ order }) => ({ ...order, amount_exact: order.payable_amount_cents === event.amount_cents }));
+}
+
+/** Unmatched incoming payments that may belong to an unpaid order. */
+export function candidatePaymentsForOrder(database: AppDatabase, order: OrderRecord) {
+  if (order.status !== "pending" && order.status !== "expired") return [];
+  const created = Date.parse(order.created_at);
+  const events = database.query(`
+    SELECT ${EVENT_COLUMNS} FROM payment_events
+    WHERE direction = '收入' AND matched_order_id IS NULL AND occurred_at >= ? AND occurred_at <= ?
+    ORDER BY occurred_at ASC LIMIT 200
+  `).all(new Date(created - 60_000).toISOString(), new Date(created + 24 * 60 * 60_000).toISOString()) as PaymentEventRecord[];
+  return events
+    .filter((event) => Math.abs(event.amount_cents - order.payable_amount_cents) <= 100 || event.trans_memo?.trim() === order.out_trade_no)
+    .map((event) => ({ ...event, amount_exact: event.amount_cents === order.payable_amount_cents }))
+    .sort((a, b) => Number(b.amount_exact) - Number(a.amount_exact) || Date.parse(a.occurred_at) - Date.parse(b.occurred_at))
+    .slice(0, 10);
+}
+
+export function resolveOrderReference(database: AppDatabase, reference: string) {
+  const value = reference.trim();
+  if (!value) return null;
+  return database.query("SELECT * FROM orders WHERE id = ? OR trade_no = ? OR out_trade_no = ? ORDER BY created_at DESC LIMIT 1")
+    .get(value, value, value) as OrderRecord | null;
+}
+
+/** Link an unmatched incoming payment to an unpaid order, mark it paid and queue the merchant notification. */
+export function linkPaymentToOrder(database: AppDatabase, eventId: number, orderId: string) {
+  const now = new Date().toISOString();
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const event = getPaymentEvent(database, eventId);
+    assert(event, 404, "PAYMENT_NOT_FOUND", "收款流水不存在");
+    assert(event.direction === "收入", 409, "PAYMENT_NOT_INCOME", "只有收入流水可以关联订单");
+    assert(!event.matched_order_id, 409, "PAYMENT_ALREADY_LINKED", "这笔收款已经关联过订单");
+    const order = getOrderById(database, orderId);
+    assert(order, 404, "ORDER_NOT_FOUND", "订单不存在");
+    assert(order.status === "pending" || order.status === "expired", 409, "ORDER_ALREADY_PAID", "订单已经是支付成功状态");
+
+    const status: OrderStatus = Date.parse(event.occurred_at) <= Date.parse(order.expires_at) ? "paid" : "late_paid";
+    database.query(`
+      UPDATE orders SET status = ?, paid_at = ?, alipay_account_log_id = ?, alipay_order_no = ?, buyer = ?
+      WHERE id = ? AND status IN ('pending', 'expired')
+    `).run(status, event.occurred_at, event.account_log_id, event.alipay_order_no || null, event.other_account ?? "", order.id);
+    database.query("UPDATE payment_events SET matched_order_id = ?, ignored_at = NULL WHERE id = ?").run(order.id, event.id);
+    database.query("DELETE FROM amount_reservations WHERE order_id = ?").run(order.id);
+    database.query(`
+      INSERT INTO notification_jobs(id, order_id, status, attempts, max_attempts, next_attempt_at, manual, created_at, updated_at)
+      VALUES (?, ?, 'pending', 0, 10, ?, 0, ?, ?)
+    `).run(crypto.randomUUID(), order.id, now, now, now);
+    database.exec("COMMIT");
+    return { order: getOrderById(database, order.id)!, amountMismatch: event.amount_cents !== order.payable_amount_cents };
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function setPaymentIgnored(database: AppDatabase, eventId: number, ignored: boolean) {
+  const event = getPaymentEvent(database, eventId);
+  assert(event, 404, "PAYMENT_NOT_FOUND", "收款流水不存在");
+  assert(!event.matched_order_id, 409, "PAYMENT_ALREADY_LINKED", "已关联订单的收款不能忽略");
+  database.query("UPDATE payment_events SET ignored_at = ? WHERE id = ?").run(ignored ? new Date().toISOString() : null, eventId);
 }
 
 export function externalStatus(status: OrderStatus) {

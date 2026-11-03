@@ -31,8 +31,8 @@ describe("shared payment scanner", () => {
     const first = createOrder(database, orderInput(1)).order;
     const second = createOrder(database, orderInput(2)).order;
     const provider = new FakeProvider([
-      { account_log_id: "A1", trans_dt: new Date().toISOString(), direction: "收入", trans_amount: "1.01", alipay_order_no: "ALI1" },
-      { account_log_id: "A2", trans_dt: new Date().toISOString(), direction: "收入", trans_amount: "1.02", alipay_order_no: "ALI2" },
+      { account_log_id: "A1", trans_dt: new Date().toISOString(), direction: "收入", trans_amount: "1.00", alipay_order_no: "ALI1" },
+      { account_log_id: "A2", trans_dt: new Date().toISOString(), direction: "收入", trans_amount: "1.01", alipay_order_no: "ALI2" },
     ]);
     const scanner = new PaymentScanner(database, provider);
     const result = await scanner.scanNow();
@@ -70,14 +70,33 @@ describe("shared payment scanner", () => {
     expect(provider.calls).toBe(2);
   });
 
-  it("does not query after the 10-minute monitor deadline", async () => {
+  it("does not query once unpaid orders are older than the late-payment watch", async () => {
     ({ database } = configuredDatabase());
     const order = createOrder(database, orderInput(1)).order;
-    database.query("UPDATE orders SET expires_at = ?, monitor_until = ?, status = 'expired' WHERE id = ?").run(
-      new Date(Date.now() - 6 * 60_000).toISOString(), new Date(Date.now() - 1).toISOString(), order.id,
+    const created = Date.now() - 3 * 60 * 60_000;
+    database.query("UPDATE orders SET created_at = ?, expires_at = ?, monitor_until = ?, status = 'expired' WHERE id = ?").run(
+      new Date(created).toISOString(), new Date(created + 5 * 60_000).toISOString(), new Date(created + 10 * 60_000).toISOString(), order.id,
     );
     const provider = new FakeProvider();
     expect((await new PaymentScanner(database, provider).scanNow()).status).toBe("skipped");
     expect(provider.calls).toBe(0);
+  });
+
+  it("records late payments after the monitor deadline without auto-matching them", async () => {
+    ({ database } = configuredDatabase());
+    const order = createOrder(database, orderInput(1)).order;
+    const created = Date.now() - 30 * 60_000;
+    database.query("UPDATE orders SET created_at = ?, expires_at = ?, monitor_until = ?, status = 'expired' WHERE id = ?").run(
+      new Date(created).toISOString(), new Date(created + 5 * 60_000).toISOString(), new Date(created + 10 * 60_000).toISOString(), order.id,
+    );
+    const provider = new FakeProvider([
+      { account_log_id: "LATE1", trans_dt: new Date().toISOString(), direction: "收入", trans_amount: "1.00", alipay_order_no: "ALI-LATE" },
+    ]);
+    const result = await new PaymentScanner(database, provider).scanNow();
+    expect(provider.calls).toBe(1);
+    expect(result.matched).toBe(0);
+    expect(getOrderById(database, order.id)?.status).toBe("expired");
+    const event = database.query("SELECT matched_order_id FROM payment_events WHERE account_log_id = 'LATE1'").get() as { matched_order_id: string | null };
+    expect(event.matched_order_id).toBeNull();
   });
 });

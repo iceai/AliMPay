@@ -1,4 +1,4 @@
-import { ArrowLeft, RefreshCw, Send } from "lucide-react";
+import { ArrowLeft, Link2, RefreshCw, Send } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import useSWR from "swr";
 import { toast } from "sonner";
@@ -12,10 +12,22 @@ import { Button } from "@/web/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/web/components/ui/card";
 import { Loading } from "@/web/components/ui/loading";
 import { formatDate, formatMoney } from "@/web/lib/utils";
+import { linkPayment } from "@/web/pages/payments";
+
+interface CandidatePayment {
+  id: number;
+  occurred_at: string;
+  amount_cents: number;
+  other_account: string | null;
+  trans_memo: string | null;
+  ignored_at: string | null;
+  amount_exact: boolean;
+}
 
 interface DetailResponse {
   order: OrderRecord;
   payment_events: Array<Record<string, unknown>>;
+  candidate_payments: CandidatePayment[];
   notifications: Array<Record<string, unknown> & { attempts_detail?: Array<Record<string, unknown>> }>;
 }
 
@@ -44,6 +56,29 @@ export function OrderDetailPage() {
         }
       />
 
+      {!paid ? (
+        <Card className="mb-6 border-primary/30">
+          <CardHeader><CardTitle>客户说已付款？</CardTitle><CardDescription>下面是该订单创建后 24 小时内、金额相差不超过 1 元且尚未关联订单的收款。核对付款方和时间后，点击关联即可标记支付成功并通知商户网站。</CardDescription></CardHeader>
+          <CardContent>
+            {data.candidate_payments.length === 0 ? <div className="py-6 text-center text-sm text-muted">暂无可能对应的收款。如果客户刚付款，可点“立即扫描”后再看。</div> : (
+              <div className="space-y-2">
+                {data.candidate_payments.map((payment) => (
+                  <div key={payment.id} className="flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2"><span className="font-mono font-semibold">{formatMoney(payment.amount_cents)}</span>{payment.amount_exact ? <Badge variant="success">金额一致</Badge> : <Badge variant="danger">金额不一致</Badge>}{payment.ignored_at ? <Badge variant="outline">已忽略</Badge> : null}</div>
+                      <div className="mt-1 text-xs text-muted">{formatDate(payment.occurred_at)}{payment.other_account ? ` · ${payment.other_account}` : ""}{payment.trans_memo ? ` · 备注 ${payment.trans_memo}` : ""}</div>
+                    </div>
+                    <Button size="sm" onClick={async () => {
+                      if (await linkPayment(payment, { reference: order.id, label: `${order.name} / ${order.out_trade_no}`, payable_amount_cents: order.payable_amount_cents })) await mutate();
+                    }}><Link2 />关联并通知</Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
+
       <div className="grid gap-4 sm:grid-cols-3">
         <Card><CardContent className="pt-5"><div className="text-sm text-muted">商户金额</div><div className="mt-2 text-2xl font-semibold">{formatMoney(order.requested_amount_cents)}</div></CardContent></Card>
         <Card><CardContent className="pt-5"><div className="text-sm text-muted">要求实付</div><div className="mt-2 text-2xl font-semibold text-primary">{formatMoney(order.payable_amount_cents)}</div></CardContent></Card>
@@ -52,7 +87,7 @@ export function OrderDetailPage() {
 
       <div className="mt-6 grid gap-6 xl:grid-cols-2">
         <Card>
-          <CardHeader><CardTitle>订单信息</CardTitle><CardDescription>订单过期后仍保留，自动监控在第 10 分钟结束。</CardDescription></CardHeader>
+          <CardHeader><CardTitle>订单信息</CardTitle><CardDescription>订单过期后仍保留；第 10 分钟后不再自动匹配，迟到的付款会进入“未匹配收款”等待人工关联。</CardDescription></CardHeader>
           <CardContent>
             <dl className="grid gap-5 sm:grid-cols-2">
               <Field label="平台订单号" value={order.trade_no} mono /><Field label="商户订单号" value={order.out_trade_no} mono />

@@ -31,7 +31,18 @@ import { audit, getSetting, setSetting, type AppDatabase } from "./db";
 import { getRuntimeEnv } from "./env";
 import { AppError, assert } from "./errors";
 import { notificationHistory, queueManualNotification } from "./notifications";
-import { getOrderById, listOrders } from "./orders";
+import {
+  candidatePaymentsForOrder,
+  countUnmatchedPayments,
+  getOrderById,
+  linkPaymentToOrder,
+  listOrders,
+  listUnmatchedPayments,
+  resolveOrderReference,
+  setPaymentIgnored,
+  suggestOrdersForPayment,
+} from "./orders";
+import { sendTelegramMessage, telegramConfig } from "./telegram";
 import {
   generateRsaKeyPair,
   randomAlphaNumeric,
@@ -193,6 +204,7 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
       late_paid_count: statuses.late_paid_count ?? 0,
       active_monitors: statuses.active_monitors ?? 0,
       notify_failed_count: notifyFailed,
+      unmatched_payment_count: countUnmatchedPayments(database),
       last_scan: lastScan,
       recent_orders: recentOrders,
       configured: isGatewayReady(database),
@@ -220,7 +232,82 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     const order = getOrderById(database, c.req.param("id"));
     assert(order, 404, "ORDER_NOT_FOUND", "订单不存在");
     const events = database.query("SELECT * FROM payment_events WHERE matched_order_id = ? ORDER BY id DESC").all(order.id);
-    return c.json({ order, payment_events: events, notifications: notificationHistory(database, order.id) });
+    return c.json({
+      order,
+      payment_events: events,
+      candidate_payments: candidatePaymentsForOrder(database, order),
+      notifications: notificationHistory(database, order.id),
+    });
+  });
+
+  app.get("/payments", (c) => {
+    const ignored = c.req.query("view") === "ignored";
+    const data = listUnmatchedPayments(database, { ignored }).map((event) => ({
+      ...event,
+      suggestions: suggestOrdersForPayment(database, event),
+    }));
+    return c.json({ data, unmatched_count: countUnmatchedPayments(database) });
+  });
+
+  app.post("/payments/:id/link", async (c) => {
+    const body = await c.req.json<{ order?: string }>().catch(() => ({} as { order?: string }));
+    assert(typeof body.order === "string" && body.order.trim(), 400, "ORDER_REQUIRED", "请填写要关联的订单");
+    const order = resolveOrderReference(database, body.order);
+    assert(order, 404, "ORDER_NOT_FOUND", "找不到这个订单，请填写平台订单号或商户订单号");
+    const eventId = Number(c.req.param("id"));
+    const result = linkPaymentToOrder(database, eventId, order.id);
+    audit(database, "payment.manual_link", {
+      actor: c.get("admin").username,
+      targetType: "order",
+      targetId: order.id,
+      ip: clientIp(c.req.raw.headers),
+      details: { payment_event_id: eventId, amount_mismatch: result.amountMismatch },
+    });
+    return c.json({ ok: true, order: result.order, amount_mismatch: result.amountMismatch });
+  });
+
+  app.post("/payments/:id/ignore", async (c) => {
+    const body = await c.req.json<{ ignored?: boolean }>().catch(() => ({} as { ignored?: boolean }));
+    const ignored = body.ignored !== false;
+    setPaymentIgnored(database, Number(c.req.param("id")), ignored);
+    audit(database, ignored ? "payment.ignore" : "payment.unignore", {
+      actor: c.get("admin").username,
+      targetType: "payment_event",
+      targetId: c.req.param("id"),
+    });
+    return c.json({ ok: true });
+  });
+
+  app.get("/telegram", (c) => {
+    const config = telegramConfig(database);
+    return c.json({ enabled: config.enabled, chat_id: config.chatId, api_base: config.apiBase, has_token: Boolean(config.token) });
+  });
+
+  app.put("/telegram", async (c) => {
+    const body = await c.req.json<{ enabled?: unknown; chat_id?: unknown; api_base?: unknown; bot_token?: unknown }>().catch(() => ({} as Record<string, unknown>));
+    if (typeof body.bot_token === "string" && body.bot_token.trim()) {
+      assert(/^\d{5,16}:[A-Za-z0-9_-]{30,64}$/.test(body.bot_token.trim()), 400, "INVALID_TELEGRAM_TOKEN", "Bot Token 格式不正确，应类似 123456789:AA…");
+      setSecret(database, "telegram_bot_token", body.bot_token.trim());
+    }
+    if (typeof body.chat_id === "string") {
+      assert(/^(-?\d{1,20}|@[A-Za-z0-9_]{5,32})?$/.test(body.chat_id.trim()), 400, "INVALID_TELEGRAM_CHAT", "Chat ID 应为数字（群组为负数）或 @频道名");
+      setSetting(database, "telegram_chat_id", body.chat_id.trim());
+    }
+    if (typeof body.api_base === "string") {
+      const base = new URL(body.api_base.trim() || "https://api.telegram.org");
+      assert(base.protocol === "https:" && !base.username && !base.password, 400, "INVALID_TELEGRAM_API", "Telegram API 地址必须是 HTTPS");
+      setSetting(database, "telegram_api_base", base.toString().replace(/\/+$/, ""));
+    }
+    if (typeof body.enabled === "boolean") setSetting(database, "telegram_enabled", body.enabled);
+    audit(database, "settings.telegram_update", { actor: c.get("admin").username, details: { keys: Object.keys(body).filter((key) => key !== "bot_token") } });
+    const config = telegramConfig(database);
+    return c.json({ ok: true, enabled: config.enabled, chat_id: config.chatId, api_base: config.apiBase, has_token: Boolean(config.token) });
+  });
+
+  app.post("/telegram/test", async (c) => {
+    await sendTelegramMessage(database, `✅ AliMPay 测试消息\n漏单和通知失败会发送到这里。\n${getSetting(database, "public_base_url", "")}`);
+    audit(database, "settings.telegram_test", { actor: c.get("admin").username });
+    return c.json({ ok: true });
   });
 
   app.post("/orders/:id/resend", (c) => {

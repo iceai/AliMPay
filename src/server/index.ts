@@ -12,6 +12,7 @@ import { isGatewayReady } from "./config";
 import { NotificationWorker } from "./notifications";
 import { buildSignedReturnUrl } from "./notifications";
 import { getCheckoutData, getOrderByCheckoutToken } from "./orders";
+import { TelegramAlertWorker } from "./telegram";
 
 const ASSET_CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -149,6 +150,8 @@ if (import.meta.main) {
   const { app, services } = createApp();
   services.scanner.start();
   services.notifications.start();
+  const alerts = new TelegramAlertWorker(services.database);
+  alerts.start();
   const runtime = getRuntimeEnv();
   const server = Bun.serve({
     hostname: runtime.host,
@@ -160,6 +163,7 @@ if (import.meta.main) {
   const shutdown = () => {
     services.scanner.stop();
     services.notifications.stop();
+    alerts.stop();
     void server.stop(true);
   };
   process.on("SIGINT", shutdown);

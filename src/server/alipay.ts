@@ -3,8 +3,11 @@ import type { OrderRecord } from "../shared/contracts";
 import { getPaymentPollIntervalSeconds, getSecret } from "./config";
 import { audit, getSetting, type AppDatabase } from "./db";
 import { AppError } from "./errors";
-import { getActiveOrders, recordAndMatchPayment, type AccountLogEvent } from "./orders";
+import { getActiveOrders, getLateWatchOrders, recordAndMatchPayment, type AccountLogEvent } from "./orders";
 import { parseMoneyToCents } from "./security";
+import { enqueueAlert } from "./telegram";
+
+const LATE_WATCH_POLL_MS = 60_000;
 
 export interface AccountLogPage {
   pageNo: number;
@@ -141,8 +144,11 @@ export class PaymentScanner {
   start() {
     if (this.timer) return;
     this.timer = setInterval(() => {
-      const pollIntervalMs = getPaymentPollIntervalSeconds(this.database) * 1_000;
-      if (getActiveOrders(this.database).length > 0 && Date.now() - this.lastCompletedAt >= pollIntervalMs) {
+      const sinceLast = Date.now() - this.lastCompletedAt;
+      const due = getActiveOrders(this.database).length > 0
+        ? sinceLast >= getPaymentPollIntervalSeconds(this.database) * 1_000
+        : sinceLast >= LATE_WATCH_POLL_MS && getLateWatchOrders(this.database).length > 0;
+      if (due) {
         void this.scanNow("scheduler").catch((error) => {
           console.error(JSON.stringify({ level: "error", event: "scan_failed", message: error instanceof Error ? error.message : String(error) }));
         });
@@ -175,12 +181,13 @@ export class PaymentScanner {
 
   private async performScan(reason: string): Promise<ScanResult> {
     let candidates = getActiveOrders(this.database);
+    const watched = getLateWatchOrders(this.database);
     const startedAt = new Date().toISOString();
     const run = this.database.query(`
       INSERT INTO scan_runs(started_at, status, active_orders) VALUES (?, 'running', ?) RETURNING id
     `).get(startedAt, candidates.length) as { id: number };
 
-    if (candidates.length === 0) {
+    if (candidates.length === 0 && watched.length === 0) {
       const finishedAt = new Date().toISOString();
       this.database.query("UPDATE scan_runs SET status = 'skipped', finished_at = ? WHERE id = ?").run(finishedAt, run.id);
       return { status: "skipped", activeOrders: 0, pages: 0, records: 0, matched: 0, traceId: "" };
@@ -191,7 +198,7 @@ export class PaymentScanner {
     let matched = 0;
     let traceId = "";
     try {
-      const earliest = Math.min(...candidates.map((order) => Date.parse(order.created_at))) - 60_000;
+      const earliest = Math.min(...[...candidates, ...watched].map((order) => Date.parse(order.created_at))) - 60_000;
       const startTime = formatShanghai(new Date(earliest));
       const endTime = formatShanghai(new Date());
       const pageSize = 2_000;
@@ -214,10 +221,11 @@ export class PaymentScanner {
           if (result.matched) {
             matched += 1;
             candidates = getActiveOrders(this.database);
-            if (candidates.length === 0) break;
+          } else if (!result.duplicate && event.direction === "收入") {
+            enqueueAlert(this.database, "unmatched_payment", String(result.eventId));
           }
         }
-        if (candidates.length === 0 || page.details.length < pageSize) break;
+        if (page.details.length < pageSize) break;
         pageNo += 1;
       }
 
