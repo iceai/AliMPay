@@ -1,10 +1,10 @@
-import { AlipaySdk } from "alipay-sdk";
+import { createSign, createVerify, randomUUID } from "node:crypto";
 import type { OrderRecord } from "../shared/contracts";
 import { getPaymentPollIntervalSeconds, getSecret } from "./config";
 import { audit, getSetting, type AppDatabase } from "./db";
 import { AppError } from "./errors";
 import { getActiveOrders, getLateWatchOrders, recordAndMatchPayment, type AccountLogEvent } from "./orders";
-import { parseMoneyToCents } from "./security";
+import { parseMoneyToCents, toPkcs8PrivateKey, toSpkiPublicKey } from "./security";
 import { enqueueAlert } from "./telegram";
 
 const LATE_WATCH_POLL_MS = 60_000;
@@ -29,8 +29,16 @@ export function prepareAlipaySdkPem(value: string) {
   return value.trim();
 }
 
+/**
+ * Calls Alipay OpenAPI V3 directly with Bun's fetch, signing and verifying per
+ * https://opendocs.alipay.com/open-v3/054q58 and /054d0z. The alipay-sdk HTTP client
+ * fails under Bun with "incorrect header check" whenever Alipay gzips the response.
+ */
 export class OfficialAlipayProvider implements AccountLogProvider {
-  constructor(private readonly database: AppDatabase) {}
+  constructor(
+    private readonly database: AppDatabase,
+    private readonly fetcher: typeof fetch = fetch,
+  ) {}
 
   async query(input: { startTime: string; endTime: string; pageNo: number; pageSize: number }): Promise<AccountLogPage> {
     const appId = getSetting(this.database, "alipay_app_id", "");
@@ -40,37 +48,61 @@ export class OfficialAlipayProvider implements AccountLogProvider {
       throw new AppError(503, "ALIPAY_NOT_CONFIGURED", "支付宝应用 ID、应用私钥或支付宝公钥尚未配置");
     }
 
-    const sdk = new AlipaySdk({
-      appId,
-      privateKey: prepareAlipaySdkPem(privateKey),
-      alipayPublicKey: prepareAlipaySdkPem(alipayPublicKey),
-      signType: "RSA2",
-      keyType: "PKCS8",
-      endpoint: getSetting(this.database, "alipay_endpoint", "https://openapi.alipay.com"),
-      timeout: 8_000,
-      camelcase: false,
-    });
-    const result = await sdk.curl<Record<string, unknown>>(
-      "GET",
-      "/v3/alipay/data/bill/accountlog/query",
-      {
-        query: {
-          start_time: input.startTime,
-          end_time: input.endTime,
-          page_no: input.pageNo,
-          page_size: input.pageSize,
+    const url = new URL("/v3/alipay/data/bill/accountlog/query", getSetting(this.database, "alipay_endpoint", "https://openapi.alipay.com"));
+    url.searchParams.set("start_time", input.startTime);
+    url.searchParams.set("end_time", input.endTime);
+    url.searchParams.set("page_no", String(input.pageNo));
+    url.searchParams.set("page_size", String(input.pageSize));
+
+    const requestId = randomUUID().replaceAll("-", "");
+    const authString = `app_id=${appId},nonce=${randomUUID()},timestamp=${Date.now()}`;
+    const signString = `${authString}\nGET\n${url.pathname}${url.search}\n\n`;
+    const signature = createSign("RSA-SHA256").update(signString, "utf8").sign(toPkcs8PrivateKey(privateKey), "base64");
+
+    let response: Response;
+    try {
+      response = await this.fetcher(url, {
+        method: "GET",
+        headers: {
+          authorization: `ALIPAY-SHA256withRSA ${authString},sign=${signature}`,
+          accept: "application/json",
+          "accept-encoding": "identity",
+          "alipay-request-id": requestId,
+          "user-agent": "AliMPay-Bun/1.0",
         },
-        requestTimeout: 8_000,
-      },
-    );
-    const data = asRecord(result.data);
+        signal: AbortSignal.timeout(8_000),
+      });
+    } catch (error) {
+      throw new AppError(502, "ALIPAY_REQUEST_FAILED", `请求支付宝失败：${error instanceof Error ? error.message : String(error)}（traceId: ${requestId}）`);
+    }
+    const text = await response.text();
+    const traceId = response.headers.get("alipay-trace-id") ?? requestId;
+
+    if (response.status >= 400) {
+      let message = `HTTP ${response.status}`;
+      try {
+        const body = JSON.parse(text) as { code?: string; message?: string };
+        message = [body.message, body.code].filter(Boolean).join(" / ") || message;
+      } catch { /* Non-JSON error body. */ }
+      throw new AppError(502, "ALIPAY_API_ERROR", `支付宝返回错误：${message}（traceId: ${traceId}）`);
+    }
+
+    const responseSignString = `${response.headers.get("alipay-timestamp")}\n${response.headers.get("alipay-nonce")}\n${text}\n`;
+    const responseSignature = response.headers.get("alipay-signature") ?? "";
+    const verified = Boolean(responseSignature) &&
+      createVerify("RSA-SHA256").update(responseSignString, "utf8").verify(toSpkiPublicKey(alipayPublicKey), responseSignature, "base64");
+    if (!verified) {
+      throw new AppError(502, "ALIPAY_SIGNATURE_INVALID", `支付宝响应验签失败，请确认填写的是最新的“支付宝公钥”（traceId: ${traceId}）`);
+    }
+
+    const data = asRecord(JSON.parse(text));
     return {
       pageNo: Number(data.page_no ?? data.pageNo ?? input.pageNo),
       pageSize: Number(data.page_size ?? data.pageSize ?? input.pageSize),
       totalSize: Number(data.total_size ?? data.totalSize ?? 0),
       details: Array.isArray(data.detail_list) ? data.detail_list.map(asRecord) :
         Array.isArray(data.detailList) ? data.detailList.map(asRecord) : [],
-      traceId: result.traceId,
+      traceId,
     };
   }
 }

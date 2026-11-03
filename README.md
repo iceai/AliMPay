@@ -7,7 +7,7 @@
 - Bun + Hono 后端、React 19 + Vite + Tailwind CSS 前端
 - SQLite WAL 持久化，不依赖 MySQL、Redis 或 ORM
 - 首次启动设置固定管理员 `admin`，密码使用 Argon2id
-- 支付宝 V3 `alipay.data.bill.accountlog.query`，由官方 `alipay-sdk` 负责 RSA2 请求和响应验签
+- 支付宝 V3 `alipay.data.bill.accountlog.query`，按官方 V3 规范做 RSA2 请求签名和响应验签（直接使用 Bun fetch，避免 `alipay-sdk` 的 HTTP 客户端在 Bun 下遇到 gzip 响应报 `incorrect header check`）
 - 经营码精确金额匹配：优先按原价收款，同金额已有待支付订单时才事务性分配 `+0.01` 至 `+0.99` 元
 - 转账备注兼容模式：标准支付宝转账 URI，订单号写入 `memo`
 - 转账链接保留从内到外三层供后台选择；第 1 层为原始 `alipays://`，第 2 层为已验证可用的单层支付宝 HTTPS，第 3 层为外层支付宝 Scheme
