@@ -81,6 +81,21 @@ export async function verifyPassword(password: string, hash: string) {
   return Bun.password.verify(password, hash, "argon2id");
 }
 
+let dummyHash: Promise<string> | undefined;
+
+/**
+ * Checks a password against an account that may not exist, spending the same argon2 time either way
+ * so response timing does not reveal which usernames are valid.
+ */
+export async function verifyLogin(password: string, hash: string | null | undefined) {
+  if (hash) return verifyPassword(password, hash);
+  dummyHash ??= createPasswordHash(randomToken(16));
+  await verifyPassword(password, await dummyHash);
+  return false;
+}
+
+export const ADMIN_USERNAME_PATTERN = /^[A-Za-z0-9_.@-]{3,32}$/;
+
 /** Idle timeout: a session lives this long after its last use. */
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60_000;
 /** Extend a session (and rewrite its cookie) at most this often. */

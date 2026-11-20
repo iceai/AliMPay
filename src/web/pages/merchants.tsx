@@ -106,8 +106,8 @@ export function MerchantsPage() {
                 </thead>
                 <tbody className="divide-y">
                   {data.data.map((merchant) => (
-                    <tr key={merchant.id} className="cursor-pointer hover:bg-foreground/[0.025]" onClick={() => navigate(`/merchants/${merchant.id}`)}>
-                      <td className="py-3"><Link className="font-medium hover:text-primary" to={`/merchants/${merchant.id}`} onClick={(event) => event.stopPropagation()}>{merchant.name}</Link>{merchant.remark ? <div className="max-w-48 truncate text-xs text-muted">{merchant.remark}</div> : null}</td>
+                    <tr key={merchant.id} className="cursor-pointer hover:bg-foreground/[0.025]" onClick={() => navigate(`/admin/merchants/${merchant.id}`)}>
+                      <td className="py-3"><Link className="font-medium hover:text-primary" to={`/admin/merchants/${merchant.id}`} onClick={(event) => event.stopPropagation()}>{merchant.name}</Link>{merchant.remark ? <div className="max-w-48 truncate text-xs text-muted">{merchant.remark}</div> : null}</td>
                       <td className="py-3 font-mono text-xs">{merchant.pid}</td>
                       <td className="py-3 font-mono">{merchant.fee_rate}%</td>
                       <td className="py-3">{merchant.login_enabled ? <span className="font-mono text-xs">{merchant.username}</span> : <span className="text-xs text-muted">未开通</span>}</td>

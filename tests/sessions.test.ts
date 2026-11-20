@@ -114,3 +114,36 @@ describe("sessions", () => {
     expect((await app.request("http://localhost/admin-api/me", { headers: { cookie: phone.cookie } })).status).toBe(401);
   });
 });
+
+describe("admin username", () => {
+  it("requires the username and gives the same answer for a wrong username or password", async () => {
+    const { app } = await setup();
+    const attempt = (body: Record<string, string>) => app.request("http://localhost/admin-api/login", { method: "POST", headers: ORIGIN, body: JSON.stringify(body) });
+    expect((await attempt({ password: "admin-password-123" })).status).toBe(400);
+    const wrongUser = await attempt({ username: "root", password: "admin-password-123" });
+    const wrongPassword = await attempt({ username: "admin", password: "nope-nope-nope" });
+    expect(wrongUser.status).toBe(401);
+    expect(wrongPassword.status).toBe(401);
+    expect(await wrongUser.json()).toEqual(await wrongPassword.json());
+    const ok = await attempt({ username: "admin", password: "admin-password-123" });
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).not.toContain("admin");
+  });
+
+  it("lets the admin rename the account", async () => {
+    const { app } = await setup();
+    const admin = await login(app, "admin", "admin-password-123");
+    const rename = (username: string, current_password: string) => app.request("http://localhost/admin-api/account", {
+      method: "PUT", headers: admin.headers, body: JSON.stringify({ username, current_password }),
+    });
+    expect((await rename("ops-owner", "wrong-password")).status).toBe(401);
+    expect((await rename("x", "admin-password-123")).status).toBe(400);
+    expect((await rename("ops-owner", "admin-password-123")).status).toBe(200);
+    const me = await (await app.request("http://localhost/admin-api/me", { headers: { cookie: admin.cookie } })).json() as { user: { username: string } };
+    expect(me.user.username).toBe("ops-owner");
+    const old = await app.request("http://localhost/admin-api/login", { method: "POST", headers: ORIGIN, body: JSON.stringify({ username: "admin", password: "admin-password-123" }) });
+    expect(old.status).toBe(401);
+    const renamed = await app.request("http://localhost/admin-api/login", { method: "POST", headers: ORIGIN, body: JSON.stringify({ username: "ops-owner", password: "admin-password-123" }) });
+    expect(renamed.status).toBe(200);
+  });
+});

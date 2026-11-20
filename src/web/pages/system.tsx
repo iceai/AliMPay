@@ -31,6 +31,9 @@ function HealthRow({ label, ready, detail }: { label: string; ready: boolean; de
 export function SystemPage() {
   const { data, isLoading } = useSWR<SystemData>("/admin-api/system", swrFetcher, { refreshInterval: 10_000 });
   const { data: scans } = useSWR<ScanResponse>("/admin-api/scans?limit=15", swrFetcher, { refreshInterval: 5_000 });
+  const { data: me, mutate: refreshMe } = useSWR<{ user: { username: string } }>("/admin-api/me", swrFetcher);
+  const [newUsername, setNewUsername] = useState("");
+  const [usernamePassword, setUsernamePassword] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   if (isLoading || !data) return <Loading label="正在检查系统" />;
@@ -75,6 +78,18 @@ export function SystemPage() {
         </CardContent>
       </Card>
 
+      <Card className="mt-6 max-w-2xl">
+        <CardHeader><CardTitle>管理员用户名</CardTitle><CardDescription>当前用户名：<span className="font-mono text-foreground">{me?.user.username ?? "—"}</span>。建议改成不易猜到的名称，登录时需要输入。</CardDescription></CardHeader>
+        <CardContent><form className="space-y-4" onSubmit={async (event) => {
+          event.preventDefault();
+          try {
+            await apiFetch("/admin-api/account", { method: "PUT", ...jsonBody({ username: newUsername.trim(), current_password: usernamePassword }) });
+            toast.success("用户名已修改，下次登录请使用新用户名");
+            setNewUsername(""); setUsernamePassword("");
+            await refreshMe();
+          } catch (error) { toast.error(error instanceof Error ? error.message : "修改失败"); }
+        }}><div className="space-y-2"><Label htmlFor="new-username">新用户名</Label><Input id="new-username" value={newUsername} onChange={(event) => setNewUsername(event.target.value)} minLength={3} maxLength={32} autoComplete="off" required /></div><div className="space-y-2"><Label htmlFor="username-password">当前密码</Label><Input id="username-password" type="password" value={usernamePassword} onChange={(event) => setUsernamePassword(event.target.value)} autoComplete="current-password" required /></div><Button>更新用户名</Button></form></CardContent>
+      </Card>
       <Card className="mt-6 max-w-2xl">
         <CardHeader><CardTitle>修改管理员密码</CardTitle><CardDescription>新密码至少 12 位；修改后当前会话保持有效。</CardDescription></CardHeader>
         <CardContent><form className="space-y-4" onSubmit={changePassword}><div className="space-y-2"><Label htmlFor="current-password">当前密码</Label><Input id="current-password" type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></div><div className="space-y-2"><Label htmlFor="new-password">新密码</Label><Input id="new-password" type="password" minLength={12} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required /></div><Button>更新密码</Button></form></CardContent>

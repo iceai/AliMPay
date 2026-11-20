@@ -26,6 +26,8 @@ import {
   createPasswordHash,
   recordLoginFailure,
   setupCompleted,
+  ADMIN_USERNAME_PATTERN,
+  verifyLogin,
   verifyPassword,
   type AuthVariables,
 } from "./auth";
@@ -82,13 +84,16 @@ import {
   toSpkiPublicKey,
 } from "./security";
 
+const adminUsername = z.string().trim().regex(ADMIN_USERNAME_PATTERN, "管理员用户名须为 3–32 位字母、数字或 _ . @ -");
+
 const setupSchema = z.object({
+  username: adminUsername.optional(),
   password: z.string().min(12, "密码至少 12 位").max(128),
   public_base_url: z.string().min(1),
 });
 
 const loginSchema = z.object({
-  username: z.string().default("admin"),
+  username: z.string().trim().min(1).max(64),
   password: z.string().min(1).max(128),
 });
 
@@ -177,8 +182,8 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     try {
       assert(!database.query("SELECT 1 FROM admin_users LIMIT 1").get(), 409, "ALREADY_CONFIGURED", "管理员已经存在");
       database.query(`
-        INSERT INTO admin_users(id, username, password_hash, created_at, updated_at) VALUES (?, 'admin', ?, ?, ?)
-      `).run(userId, passwordHash, now, now);
+        INSERT INTO admin_users(id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+      `).run(userId, parsed.data.username ?? "admin", passwordHash, now, now);
       setSetting(database, "public_base_url", publicBase);
       setSecret(database, "v2_platform_private_key", platformPair.privateKey);
       setSetting(database, "v2_platform_public_key", platformPair.publicKey);
@@ -193,7 +198,7 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     }
 
     writeSessionCookies(c, ADMIN_SESSION, issueSession(database, ADMIN_SESSION, userId, c.req.raw.headers));
-    return c.json({ ok: true, username: "admin" }, 201);
+    return c.json({ ok: true }, 201);
   });
 
   app.post("/login", async (c) => {
@@ -208,7 +213,7 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
       username: string;
       password_hash: string;
     } | null;
-    if (!user || !(await verifyPassword(parsed.data.password, user.password_hash))) {
+    if (!(await verifyLogin(parsed.data.password, user?.password_hash)) || !user) {
       recordLoginFailure(rateKey);
       audit(database, "auth.login_failed", { actor: parsed.data.username, ip: clientIp(c.req.raw.headers) });
       throw new AppError(401, "INVALID_CREDENTIALS", "用户名或密码错误");
@@ -216,7 +221,7 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     clearLoginFailures(rateKey);
     writeSessionCookies(c, ADMIN_SESSION, issueSession(database, ADMIN_SESSION, user.id, c.req.raw.headers));
     audit(database, "auth.login", { actor: user.username, ip: clientIp(c.req.raw.headers) });
-    return c.json({ ok: true, username: user.username });
+    return c.json({ ok: true });
   });
 
   app.use("*", authMiddleware(database));
@@ -524,6 +529,21 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     revokeOtherSessions(database, ADMIN_SESSION, admin.id, getCookie(c, SESSION_COOKIE));
     audit(database, "auth.password_change", { actor: admin.username });
     return c.json({ ok: true });
+  });
+
+  app.put("/account", async (c) => {
+    const body = await c.req.json<{ username?: string; current_password?: string }>().catch(() => ({} as { username?: string; current_password?: string }));
+    const parsed = adminUsername.safeParse(body.username ?? "");
+    if (!parsed.success) throw new AppError(400, "INVALID_USERNAME", parsed.error.issues[0]?.message ?? "用户名格式错误");
+    assert(body.current_password, 400, "PASSWORD_REQUIRED", "请输入当前密码以确认修改");
+    const admin = c.get("admin");
+    const row = database.query("SELECT password_hash FROM admin_users WHERE id = ?").get(admin.id) as { password_hash: string };
+    assert(await verifyPassword(body.current_password, row.password_hash), 401, "INVALID_PASSWORD", "当前密码错误");
+    const taken = database.query("SELECT id FROM admin_users WHERE username = ? AND id != ?").get(parsed.data, admin.id);
+    assert(!taken, 409, "USERNAME_TAKEN", "该用户名已被使用");
+    database.query("UPDATE admin_users SET username = ?, updated_at = ? WHERE id = ?").run(parsed.data, new Date().toISOString(), admin.id);
+    audit(database, "auth.username_change", { actor: parsed.data, ip: clientIp(c.req.raw.headers), details: { previous: admin.username } });
+    return c.json({ ok: true, username: parsed.data });
   });
 
   app.get("/system", (c) => {

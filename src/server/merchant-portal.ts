@@ -12,6 +12,7 @@ import {
   recordLoginFailure,
   revokeSession,
   writeSessionCookies,
+  verifyLogin,
   verifyPassword,
 } from "./auth";
 import { audit, getSetting, type AppDatabase } from "./db";
@@ -91,7 +92,7 @@ export function createMerchantPortalRoutes(database: AppDatabase) {
     const rateKey = `merchant:${clientIp(c.req.raw.headers)}:${parsed.data.username}`;
     checkLoginRateLimit(rateKey);
     const merchant = database.query("SELECT * FROM merchants WHERE username = ?").get(parsed.data.username) as MerchantRow | null;
-    if (!merchant?.password_hash || !(await verifyPassword(parsed.data.password, merchant.password_hash))) {
+    if (!(await verifyLogin(parsed.data.password, merchant?.password_hash)) || !merchant) {
       recordLoginFailure(rateKey);
       audit(database, "merchant.login_failed", { actor: `merchant:${parsed.data.username}`, ip: clientIp(c.req.raw.headers) });
       throw new AppError(401, "INVALID_CREDENTIALS", "用户名或密码错误");

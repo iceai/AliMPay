@@ -162,7 +162,7 @@ export function WithdrawalsPage() {
                 <tbody className="divide-y">
                   {data.data.map((withdrawal) => (
                     <tr key={withdrawal.id} className="align-top">
-                      <td className="py-3"><Link className="hover:text-primary" to={`/merchants/${withdrawal.merchant_id}`}>{withdrawal.merchant_name}</Link><div className="font-mono text-xs text-muted">{withdrawal.merchant_pid}</div></td>
+                      <td className="py-3"><Link className="hover:text-primary" to={`/admin/merchants/${withdrawal.merchant_id}`}>{withdrawal.merchant_name}</Link><div className="font-mono text-xs text-muted">{withdrawal.merchant_pid}</div></td>
                       <td className="py-3 font-mono text-xs">{withdrawal.withdraw_no}{withdrawal.merchant_note ? <div className="mt-1 max-w-40 font-sans text-muted">备注：{withdrawal.merchant_note}</div> : null}</td>
                       <td className="py-3 font-mono font-semibold">{formatMoney(withdrawal.amount_cents)}</td>
                       <td className="py-3 font-mono text-muted">{formatMoney(withdrawal.fee_cents)}<div className="text-xs">{withdrawal.fee_rate_bp / 100}%</div></td>

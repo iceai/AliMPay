@@ -44,7 +44,7 @@ export function OrderDetailPage() {
 
   return (
     <>
-      <div className="mb-4"><Button asChild variant="ghost" size="sm"><Link to="/orders"><ArrowLeft />返回订单列表</Link></Button></div>
+      <div className="mb-4"><Button asChild variant="ghost" size="sm"><Link to="/admin/orders"><ArrowLeft />返回订单列表</Link></Button></div>
       <PageHeader
         title={order.name}
         description={`商户订单号 ${order.out_trade_no}`}

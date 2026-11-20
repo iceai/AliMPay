@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import useSWR from "swr";
 import { swrFetcher } from "@/web/api";
 import { SessionGuard } from "@/web/components/session-guard";
@@ -27,35 +27,55 @@ import { SetupPage } from "@/web/pages/setup";
 import { SystemPage } from "@/web/pages/system";
 
 function RequireAdmin({ children }: { children: ReactNode }) {
-  return <SessionGuard meKey="/admin-api/me" loginPath="/login" title="AliMPay 管理后台">{children}</SessionGuard>;
+  return <SessionGuard meKey="/admin-api/me" loginPath="/admin/login" title="AliMPay 管理后台">{children}</SessionGuard>;
 }
 
-function Home() {
-  const { data, isLoading } = useSWR<{ setup_completed: boolean }>("/admin-api/setup/status", swrFetcher);
-  if (isLoading) return <Loading />;
-  return <Navigate to={data?.setup_completed ? "/dashboard" : "/setup"} replace />;
+/** Admin pages used to live at the root; these paths are still honoured for existing admin sessions. */
+const LEGACY_ADMIN_PATHS = ["/dashboard", "/orders", "/payments", "/merchants", "/withdrawals", "/settings", "/keys", "/docs", "/system"];
+
+/**
+ * Where a visitor goes when the URL is not explicitly /admin/... or /merchant/... (the site root,
+ * old admin links, typos). Only someone already holding an admin session is sent to the admin panel;
+ * everyone else lands on the merchant side, so merchants never see the admin login.
+ */
+function EntryRedirect() {
+  const location = useLocation();
+  const setup = useSWR<{ setup_completed: boolean }>("/admin-api/setup/status", swrFetcher);
+  const admin = useSWR("/admin-api/me", swrFetcher, { shouldRetryOnError: false });
+  if (setup.isLoading || admin.isLoading) return <Loading />;
+  if (setup.data && !setup.data.setup_completed) return <Navigate to="/admin/setup" replace />;
+  if (admin.data) {
+    const legacy = LEGACY_ADMIN_PATHS.some((path) => location.pathname === path || location.pathname.startsWith(`${path}/`));
+    return <Navigate to={legacy ? `/admin${location.pathname}${location.search}` : "/admin/dashboard"} replace />;
+  }
+  return <Navigate to="/merchant/dashboard" replace />;
 }
 
 export function App() {
   return (
     <Routes>
-      <Route path="/" element={<Home />} />
-      <Route path="/setup" element={<SetupPage />} />
-      <Route path="/login" element={<LoginPage />} />
       <Route path="/checkout/:token" element={<CheckoutPage />} />
+
+      {/* Platform admin: everything under /admin */}
+      <Route path="/admin" element={<Navigate to="/admin/dashboard" replace />} />
+      <Route path="/admin/setup" element={<SetupPage />} />
+      <Route path="/admin/login" element={<LoginPage />} />
+      <Route path="/setup" element={<Navigate to="/admin/setup" replace />} />
       <Route element={<RequireAdmin><AppShell /></RequireAdmin>}>
-        <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="/orders" element={<OrdersPage />} />
-        <Route path="/orders/:id" element={<OrderDetailPage />} />
-        <Route path="/payments" element={<PaymentsPage />} />
-        <Route path="/merchants" element={<MerchantsPage />} />
-        <Route path="/merchants/:id" element={<MerchantDetailPage />} />
-        <Route path="/withdrawals" element={<WithdrawalsPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/keys" element={<KeyCenterPage />} />
-        <Route path="/docs" element={<DocsPage />} />
-        <Route path="/system" element={<SystemPage />} />
+        <Route path="/admin/dashboard" element={<DashboardPage />} />
+        <Route path="/admin/orders" element={<OrdersPage />} />
+        <Route path="/admin/orders/:id" element={<OrderDetailPage />} />
+        <Route path="/admin/payments" element={<PaymentsPage />} />
+        <Route path="/admin/merchants" element={<MerchantsPage />} />
+        <Route path="/admin/merchants/:id" element={<MerchantDetailPage />} />
+        <Route path="/admin/withdrawals" element={<WithdrawalsPage />} />
+        <Route path="/admin/settings" element={<SettingsPage />} />
+        <Route path="/admin/keys" element={<KeyCenterPage />} />
+        <Route path="/admin/docs" element={<DocsPage />} />
+        <Route path="/admin/system" element={<SystemPage />} />
       </Route>
+
+      {/* Merchant portal: everything under /merchant */}
       <Route path="/merchant/login" element={<MerchantLoginPage />} />
       <Route path="/merchant" element={<Navigate to="/merchant/dashboard" replace />} />
       <Route element={<RequireMerchant><MerchantShell /></RequireMerchant>}>
@@ -66,7 +86,8 @@ export function App() {
         <Route path="/merchant/api" element={<MerchantApiPage />} />
         <Route path="/merchant/account" element={<MerchantAccountPage />} />
       </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
+      {/* Site root, old admin links and unknown paths */}
+      <Route path="*" element={<EntryRedirect />} />
     </Routes>
   );
 }

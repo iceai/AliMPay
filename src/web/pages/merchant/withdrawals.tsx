@@ -65,7 +65,7 @@ function RequestForm({ data, onDone }: { data: Response; onDone: () => unknown }
   }
 
   if (!settings.enabled) {
-    return <Card><CardContent className="py-10 text-center text-sm text-muted">平台暂未开放提现，请联系管理员。</CardContent></Card>;
+    return <Card><CardContent className="py-10 text-center text-sm text-muted">平台暂未开放提现，请联系平台客服。</CardContent></Card>;
   }
 
   return (

@@ -41,7 +41,7 @@ export function MerchantLoginPage() {
         <Card>
           <CardHeader>
             <CardTitle>商户登录</CardTitle>
-            <CardDescription>使用平台管理员为你开通的账号登录。</CardDescription>
+            <CardDescription>使用平台为你开通的商户账号登录。</CardDescription>
           </CardHeader>
           <CardContent>
             <form className="space-y-4" onSubmit={submit}>

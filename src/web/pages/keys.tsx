@@ -122,7 +122,7 @@ export function KeyCenterPage() {
   return (
     <>
       <PageHeader title="密钥中心" description="平台级凭据：支付宝应用密钥与 V2 平台密钥。各商户的 V1 MD5 key 与 V2 商户公钥在“商户管理”中按商户单独配置。" />
-      <div className="mb-6 flex gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm leading-6 text-muted"><AlertTriangle className="mt-0.5 size-5 shrink-0 text-destructive" /><div><span className="font-semibold text-foreground">不要复用密钥。</span> 支付宝应用密钥、V2 平台密钥与各商户的接口密钥各自承担不同的信任方向。V2 平台密钥由所有商户共用验签，轮换后所有 V2 商户都需同步新平台公钥。<Link className="ml-1 text-primary hover:underline" to="/merchants">前往商户管理 →</Link></div></div>
+      <div className="mb-6 flex gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm leading-6 text-muted"><AlertTriangle className="mt-0.5 size-5 shrink-0 text-destructive" /><div><span className="font-semibold text-foreground">不要复用密钥。</span> 支付宝应用密钥、V2 平台密钥与各商户的接口密钥各自承担不同的信任方向。V2 平台密钥由所有商户共用验签，轮换后所有 V2 商户都需同步新平台公钥。<Link className="ml-1 text-primary hover:underline" to="/admin/merchants">前往商户管理 →</Link></div></div>
 
       <div className="grid gap-6 xl:grid-cols-2">
         <Card>

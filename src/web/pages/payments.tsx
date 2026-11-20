@@ -81,7 +81,7 @@ function PaymentCard({ payment, ignoredView, refresh }: { payment: UnmatchedPaym
             <div key={order.id} className={cn("flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between", order.amount_exact && "border-success/40 bg-success/5")}>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Link to={`/orders/${order.id}`} className="truncate font-medium hover:text-primary">{order.name}</Link>
+                  <Link to={`/admin/orders/${order.id}`} className="truncate font-medium hover:text-primary">{order.name}</Link>
                   <StatusBadge status={order.status} />
                   {order.amount_exact ? <Badge variant="success">金额一致</Badge> : <Badge variant="danger">应付 {formatMoney(order.payable_amount_cents)}</Badge>}
                 </div>

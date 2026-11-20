@@ -37,7 +37,7 @@ export function MerchantAccountPage() {
       <PageHeader title="账户设置" />
       <div className="grid gap-6 xl:grid-cols-2">
         <Card>
-          <CardHeader><CardTitle>商户信息</CardTitle><CardDescription>名称和费率由平台管理员设置。</CardDescription></CardHeader>
+          <CardHeader><CardTitle>商户信息</CardTitle><CardDescription>名称和费率由平台设置，如需调整请联系平台。</CardDescription></CardHeader>
           <CardContent>
             <dl className="grid gap-4 sm:grid-cols-2 text-sm">
               <div><dt className="text-xs text-muted">商户名称</dt><dd className="mt-1">{merchant?.name}</dd></div>

@@ -13,21 +13,22 @@ import { Loading } from "@/web/components/ui/loading";
 export function LoginPage() {
   const navigate = useNavigate();
   const { data, isLoading } = useSWR<{ setup_completed: boolean }>("/admin-api/setup/status", swrFetcher);
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   useEffect(() => { document.title = "AliMPay 管理后台"; }, []);
   if (isLoading) return <Loading />;
-  if (!data?.setup_completed) return <Navigate to="/setup" replace />;
+  if (!data?.setup_completed) return <Navigate to="/admin/setup" replace />;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
     setSubmitting(true);
     try {
-      await apiFetch("/admin-api/login", { method: "POST", ...jsonBody({ username: "admin", password }) });
+      await apiFetch("/admin-api/login", { method: "POST", ...jsonBody({ username: username.trim(), password }) });
       await primeSession("/admin-api/me");
-      navigate("/dashboard", { replace: true });
+      navigate("/admin/dashboard", { replace: true });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "登录失败");
     } finally {
@@ -45,12 +46,12 @@ export function LoginPage() {
         <Card>
           <CardHeader>
             <CardTitle>管理员登录</CardTitle>
-            <CardDescription>平台管理员账号，用户名固定为 admin。</CardDescription>
+            <CardDescription>仅限平台管理员使用。</CardDescription>
           </CardHeader>
           <CardContent>
             <form className="space-y-4" onSubmit={submit}>
-              <div className="space-y-2"><Label htmlFor="login-user">用户名</Label><Input id="login-user" value="admin" disabled /></div>
-              <div className="space-y-2"><Label htmlFor="login-password">密码</Label><Input id="login-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoFocus autoComplete="current-password" required /></div>
+              <div className="space-y-2"><Label htmlFor="login-user">用户名</Label><Input id="login-user" value={username} onChange={(event) => setUsername(event.target.value)} autoFocus autoComplete="username" required /></div>
+              <div className="space-y-2"><Label htmlFor="login-password">密码</Label><Input id="login-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></div>
               {error ? <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert">{error}</div> : null}
               <Button className="w-full" disabled={submitting}>{submitting ? "正在验证…" : "登录"}<LogIn /></Button>
             </form>

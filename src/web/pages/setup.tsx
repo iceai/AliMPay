@@ -12,6 +12,7 @@ import { Loading } from "@/web/components/ui/loading";
 export function SetupPage() {
   const navigate = useNavigate();
   const { data, isLoading } = useSWR<{ setup_completed: boolean }>("/admin-api/setup/status", swrFetcher);
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [baseUrl, setBaseUrl] = useState(window.location.origin);
@@ -19,7 +20,7 @@ export function SetupPage() {
   const [submitting, setSubmitting] = useState(false);
 
   if (isLoading) return <Loading label="正在检查系统状态" />;
-  if (data?.setup_completed) return <Navigate to="/login" replace />;
+  if (data?.setup_completed) return <Navigate to="/admin/login" replace />;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -30,10 +31,10 @@ export function SetupPage() {
     }
     setSubmitting(true);
     try {
-      await apiFetch("/admin-api/setup", { method: "POST", ...jsonBody({ password, public_base_url: baseUrl }) });
+      await apiFetch("/admin-api/setup", { method: "POST", ...jsonBody({ username: username.trim(), password, public_base_url: baseUrl }) });
       await mutate("/admin-api/setup/status");
       await mutate("/admin-api/me");
-      navigate("/dashboard", { replace: true });
+      navigate("/admin/dashboard", { replace: true });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "初始化失败");
     } finally {
@@ -50,7 +51,7 @@ export function SetupPage() {
             <div><div className="font-semibold">AliMPay</div><div className="text-sm text-muted">Bun 单商户收款网关</div></div>
           </div>
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">先完成三项基础配置</h1>
-          <p className="mt-4 text-base leading-7 text-muted">初始化会创建固定管理员 admin、V1 MD5 凭据和 V2 平台密钥。支付宝应用密钥与经营码稍后在后台配置。</p>
+          <p className="mt-4 text-base leading-7 text-muted">初始化会创建管理员账号、默认商户和 V2 平台密钥。支付宝应用密钥与经营码稍后在后台配置。</p>
           <div className="mt-8 space-y-5">
             {[
               { icon: ShieldCheck, title: "本机加密存储", text: "敏感密钥使用 AES-256-GCM 加密后写入 SQLite。" },
@@ -74,7 +75,7 @@ export function SetupPage() {
             <form className="space-y-5" onSubmit={submit}>
               <div className="space-y-2">
                 <Label htmlFor="username">管理员用户名</Label>
-                <Input id="username" value="admin" disabled />
+                <Input id="username" value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} maxLength={32} autoComplete="username" placeholder="请勿使用 admin 等常见名称" required />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="base-url">公开访问地址</Label>

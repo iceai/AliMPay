@@ -39,14 +39,14 @@ export function DashboardPage() {
       {!data.configured ? (
         <div className="mb-6 flex flex-col gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex gap-3"><AlertTriangle className="mt-0.5 size-5 shrink-0 text-destructive" /><div><div className="text-sm font-semibold">收款配置尚未完成</div><p className="mt-1 text-sm text-muted">请配置当前收款模式所需信息，并补齐支付宝 V3 应用凭据。</p></div></div>
-          <Button asChild size="sm"><Link to="/settings">前往配置</Link></Button>
+          <Button asChild size="sm"><Link to="/admin/settings">前往配置</Link></Button>
         </div>
       ) : null}
 
       {data.unmatched_payment_count > 0 ? (
         <div className="mb-6 flex flex-col gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex gap-3"><AlertTriangle className="mt-0.5 size-5 shrink-0 text-destructive" /><div><div className="text-sm font-semibold">有 {data.unmatched_payment_count} 笔收款没对上订单</div><p className="mt-1 text-sm text-muted">可能是客户付错金额或超时付款，核对后一键关联即可补发通知。</p></div></div>
-          <Button asChild size="sm"><Link to="/payments">去处理</Link></Button>
+          <Button asChild size="sm"><Link to="/admin/payments">去处理</Link></Button>
         </div>
       ) : null}
 
@@ -66,7 +66,7 @@ export function DashboardPage() {
         <Card>
           <CardHeader className="flex-row items-center justify-between">
             <div><CardTitle>最近订单</CardTitle><CardDescription>状态每 5 秒刷新一次。</CardDescription></div>
-            <Button asChild variant="ghost" size="sm"><Link to="/orders">查看全部</Link></Button>
+            <Button asChild variant="ghost" size="sm"><Link to="/admin/orders">查看全部</Link></Button>
           </CardHeader>
           <CardContent>
             {data.recent_orders.length === 0 ? (
@@ -79,7 +79,7 @@ export function DashboardPage() {
                     {data.recent_orders.map((order) => (
                       <tr key={order.id}>
                         <td className="max-w-32 truncate py-3">{order.merchant_name || order.pid}</td>
-                        <td className="py-3 font-mono text-xs"><Link className="hover:text-primary" to={`/orders/${order.id}`}>{order.out_trade_no}</Link></td>
+                        <td className="py-3 font-mono text-xs"><Link className="hover:text-primary" to={`/admin/orders/${order.id}`}>{order.out_trade_no}</Link></td>
                         <td className="max-w-48 truncate py-3">{order.name}</td>
                         <td className="py-3 font-mono">{formatMoney(order.requested_amount_cents)}</td>
                         <td className="py-3"><StatusBadge status={order.status} /></td>

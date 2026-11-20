@@ -73,7 +73,7 @@ export function OrdersPage() {
                 <tbody className="divide-y">
                   {data?.data.map((order) => (
                     <tr key={order.id} className="hover:bg-foreground/[0.025]">
-                      <td className="py-3 font-mono text-xs"><Link className="hover:text-primary" to={`/orders/${order.id}`}>{order.trade_no}</Link></td>
+                      <td className="py-3 font-mono text-xs"><Link className="hover:text-primary" to={`/admin/orders/${order.id}`}>{order.trade_no}</Link></td>
                       <td className="max-w-32 truncate py-3">{order.merchant_name || <span className="font-mono text-xs text-muted">{order.pid}</span>}</td>
                       <td className="py-3 font-mono text-xs">{order.out_trade_no}</td>
                       <td className="py-3 uppercase text-muted">{order.api_version}</td>

@@ -67,7 +67,7 @@ export function buildAlertMessage(database: AppDatabase, alert: Pick<AlertRow, "
     } else {
       lines.push("", "没有找到金额相近的未支付订单，可能是与订单无关的收款。");
     }
-    lines.push("", `处理：${adminUrl(database, "/payments")}`);
+    lines.push("", `处理：${adminUrl(database, "/admin/payments")}`);
     return lines.join("\n");
   }
 
@@ -86,7 +86,7 @@ export function buildAlertMessage(database: AppDatabase, alert: Pick<AlertRow, "
     `商户单号：${order.out_trade_no}`,
     `已尝试 ${job.attempts} 次，最后结果：${job.last_http_status ? `HTTP ${job.last_http_status} ` : ""}${job.last_error ?? "未知错误"}`.slice(0, 600),
     "",
-    `处理：${adminUrl(database, `/orders/${order.id}`)}`,
+    `处理：${adminUrl(database, `/admin/orders/${order.id}`)}`,
   ].join("\n");
 }
 

@@ -22,23 +22,23 @@ import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/web/compone
 import { cn } from "@/web/lib/utils";
 
 const navigation = [
-  { to: "/dashboard", label: "仪表盘", icon: LayoutDashboard },
-  { to: "/orders", label: "订单", icon: ReceiptText },
-  { to: "/payments", label: "未匹配收款", icon: CircleAlert },
-  { to: "/merchants", label: "商户管理", icon: Store },
-  { to: "/withdrawals", label: "提现管理", icon: Banknote },
-  { to: "/settings", label: "收款配置", icon: Settings2 },
-  { to: "/keys", label: "密钥中心", icon: KeyRound },
-  { to: "/docs", label: "API 文档", icon: BookOpenText },
-  { to: "/system", label: "系统状态", icon: Activity },
+  { to: "/admin/dashboard", label: "仪表盘", icon: LayoutDashboard },
+  { to: "/admin/orders", label: "订单", icon: ReceiptText },
+  { to: "/admin/payments", label: "未匹配收款", icon: CircleAlert },
+  { to: "/admin/merchants", label: "商户管理", icon: Store },
+  { to: "/admin/withdrawals", label: "提现管理", icon: Banknote },
+  { to: "/admin/settings", label: "收款配置", icon: Settings2 },
+  { to: "/admin/keys", label: "密钥中心", icon: KeyRound },
+  { to: "/admin/docs", label: "API 文档", icon: BookOpenText },
+  { to: "/admin/system", label: "系统状态", icon: Activity },
 ];
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const navigate = useNavigate();
   const { data: dashboard } = useSWR<DashboardData>("/admin-api/dashboard", swrFetcher, { refreshInterval: 15_000 });
   const badges: Record<string, number> = {
-    "/payments": dashboard?.unmatched_payment_count ?? 0,
-    "/withdrawals": dashboard?.pending_withdrawal_count ?? 0,
+    "/admin/payments": dashboard?.unmatched_payment_count ?? 0,
+    "/admin/withdrawals": dashboard?.pending_withdrawal_count ?? 0,
   };
   return (
     <div className="flex h-full flex-col">
@@ -73,7 +73,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           onClick={async () => {
             await apiFetch("/admin-api/logout", { method: "POST" }).catch(() => undefined);
             await mutate(() => true, undefined, { revalidate: false });
-            navigate("/login", { replace: true });
+            navigate("/admin/login", { replace: true });
           }}
         >
           <LogOut />退出登录
