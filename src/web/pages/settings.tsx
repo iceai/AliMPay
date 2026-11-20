@@ -25,7 +25,6 @@ interface SettingsData extends PublicSettings {
   transfer_user_id: string;
   alipay_public_key: string;
   has_alipay_private_key: boolean;
-  has_v1_key: boolean;
   has_v2_platform_private_key: boolean;
 }
 

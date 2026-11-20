@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import type { AppDatabase } from "../src/server/db";
-import { getSecret } from "../src/server/config";
 import { NotificationWorker } from "../src/server/notifications";
 import { createOrder } from "../src/server/orders";
 import { rsaVerify, verifyMd5 } from "../src/server/security";
@@ -28,7 +27,7 @@ describe("notification delivery", () => {
     const { jobId } = paidOrderAndJob(database);
     const fetcher = mock(async (input: string | URL | Request) => {
       const url = new URL(String(input));
-      expect(verifyMd5(Object.fromEntries(url.searchParams), getSecret(database!, "v1_key"))).toBe(true);
+      expect(verifyMd5(Object.fromEntries(url.searchParams), "1234567890abcdef1234567890abcdef")).toBe(true);
       expect(url.searchParams.get("trade_status")).toBe("TRADE_SUCCESS");
       return new Response(" success\n", { status: 200 });
     }) as unknown as typeof fetch;

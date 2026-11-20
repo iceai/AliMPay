@@ -5,13 +5,15 @@ import { secureHeaders } from "hono/secure-headers";
 import { createAdminRoutes } from "./admin";
 import { PaymentScanner } from "./alipay";
 import { getDatabase, type AppDatabase } from "./db";
+import { createMerchantPortalRoutes } from "./merchant-portal";
 import { createEasyPayRoutes } from "./easypay";
 import { getRuntimeEnv } from "./env";
 import { AppError } from "./errors";
 import { isGatewayReady } from "./config";
 import { NotificationWorker } from "./notifications";
 import { buildSignedReturnUrl } from "./notifications";
-import { getCheckoutData, getOrderByCheckoutToken } from "./orders";
+import { waitForOrder } from "./order-events";
+import { getCheckoutData, getOrderByCheckoutToken, isNotifyDelivered } from "./orders";
 import { TelegramAlertWorker } from "./telegram";
 
 const ASSET_CONTENT_TYPES: Record<string, string> = {
@@ -27,6 +29,8 @@ const ASSET_CONTENT_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
   ".map": "application/json; charset=utf-8",
 };
+
+const CHECKOUT_WAIT_MS = 20_000;
 
 export interface AppServices {
   database: AppDatabase;
@@ -82,6 +86,7 @@ export function createApp(services?: Partial<AppServices>) {
   });
 
   app.route("/admin-api", createAdminRoutes(database, scanner));
+  app.route("/merchant-api", createMerchantPortalRoutes(database));
   app.route("/", createEasyPayRoutes(database, scanner));
 
   app.get("/public-api/checkout/:token", async (c) => {
@@ -93,6 +98,30 @@ export function createApp(services?: Partial<AppServices>) {
     if (!order) throw new AppError(404, "CHECKOUT_NOT_FOUND", "支付订单不存在");
     const data = getCheckoutData(database, c.req.param("token"), buildSignedReturnUrl(database, order));
     return c.json(data);
+  });
+
+  // Long-poll: returns as soon as the order's state differs from `since`, or after ~20s.
+  // States: "pending" → "paid" → "notified" (merchant acknowledged the notification).
+  app.get("/public-api/checkout/:token/wait", async (c) => {
+    c.header("cache-control", "no-store");
+    const token = c.req.param("token");
+    const initial = getOrderByCheckoutToken(database, token);
+    if (!initial) throw new AppError(404, "CHECKOUT_NOT_FOUND", "支付订单不存在");
+    const since = c.req.query("since") ?? "pending";
+    const state = () => {
+      const current = getOrderByCheckoutToken(database, token);
+      if (!current || (current.status !== "paid" && current.status !== "late_paid")) return "pending";
+      return isNotifyDelivered(database, current.id) ? "notified" : "paid";
+    };
+    const stillWatched = initial.status === "paid" || initial.status === "late_paid" || Date.parse(initial.monitor_until) > Date.now();
+    if (stillWatched) {
+      const waiting = waitForOrder(initial.id, () => state() !== since, CHECKOUT_WAIT_MS, c.req.raw.signal);
+      void scanner.ensureFresh(initial).catch(() => undefined);
+      await waiting;
+    }
+    const order = getOrderByCheckoutToken(database, token);
+    if (!order) throw new AppError(404, "CHECKOUT_NOT_FOUND", "支付订单不存在");
+    return c.json(getCheckoutData(database, token, buildSignedReturnUrl(database, order)));
   });
 
   app.get("/uploads/:filename", async (c) => {
@@ -156,6 +185,8 @@ if (import.meta.main) {
   const server = Bun.serve({
     hostname: runtime.host,
     port: runtime.port,
+    // Checkout long-polls hold a request for up to 20s; Bun's default idle timeout is 10s.
+    idleTimeout: 30,
     fetch: app.fetch,
   });
   console.log(JSON.stringify({ level: "info", event: "server_started", url: server.url.toString(), data_dir: runtime.dataDir }));

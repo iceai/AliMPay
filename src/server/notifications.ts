@@ -1,8 +1,10 @@
 import type { ApiVersion, OrderRecord } from "../shared/contracts";
 import { getSecret } from "./config";
-import { getSetting, type AppDatabase } from "./db";
+import type { AppDatabase } from "./db";
 import { getRuntimeEnv } from "./env";
 import { AppError } from "./errors";
+import { getMerchantByPid, getMerchantV1Key } from "./merchants";
+import { onOrderEvent, emitOrderEvent } from "./order-events";
 import { buildReturnParameters, getOrderById } from "./orders";
 import { assertPublicDestination, md5Sign, rsaSign, validateCallbackUrl } from "./security";
 import { enqueueAlert } from "./telegram";
@@ -17,14 +19,17 @@ interface NotificationJob {
   manual: number;
 }
 
+/** V1 payloads are signed with the merchant's own MD5 key; V2 with the shared platform private key. */
 export function signPlatformParameters(
   database: AppDatabase,
   apiVersion: ApiVersion,
   payload: Record<string, unknown>,
+  pid = "",
 ) {
   if (apiVersion === "v1") {
-    const key = getSecret(database, "v1_key");
-    if (!key) throw new AppError(503, "V1_KEY_MISSING", "V1 MD5 密钥尚未配置");
+    const merchant = getMerchantByPid(database, pid);
+    const key = merchant ? getMerchantV1Key(merchant) : "";
+    if (!key) throw new AppError(503, "V1_KEY_MISSING", "商户 V1 MD5 密钥不存在");
     return { ...payload, sign: md5Sign(payload, key), sign_type: "MD5" };
   }
   const timestamp = String(Math.floor(Date.now() / 1_000));
@@ -43,7 +48,7 @@ function toSearchParams(parameters: Record<string, unknown>) {
 }
 
 export function buildSignedCallbackUrl(database: AppDatabase, order: OrderRecord, baseUrl: string) {
-  const signed = signPlatformParameters(database, order.api_version, buildReturnParameters(order));
+  const signed = signPlatformParameters(database, order.api_version, buildReturnParameters(order), order.pid);
   const url = new URL(baseUrl);
   const search = toSearchParams(signed);
   for (const [key, value] of search) url.searchParams.set(key, value);
@@ -72,7 +77,9 @@ export function queueManualNotification(database: AppDatabase, orderId: string) 
 
 export class NotificationWorker {
   private timer: ReturnType<typeof setInterval> | null = null;
+  private unsubscribe: (() => void) | null = null;
   private working = false;
+  private rerun = false;
 
   constructor(
     private readonly database: AppDatabase,
@@ -87,23 +94,33 @@ export class NotificationWorker {
   start() {
     if (this.timer) return;
     this.timer = setInterval(() => void this.tick(), 500);
+    // Deliver the moment an order is paid instead of waiting for the next interval.
+    this.unsubscribe = onOrderEvent(() => void this.tick());
     void this.tick();
   }
 
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.unsubscribe?.();
+    this.unsubscribe = null;
   }
 
   async tick() {
-    if (this.working) return;
+    if (this.working) {
+      this.rerun = true;
+      return;
+    }
     this.working = true;
     try {
-      for (let count = 0; count < 10; count += 1) {
-        const job = this.claimNext();
-        if (!job) break;
-        await this.deliver(job);
-      }
+      do {
+        this.rerun = false;
+        for (let count = 0; count < 10; count += 1) {
+          const job = this.claimNext();
+          if (!job) break;
+          await this.deliver(job);
+        }
+      } while (this.rerun);
     } finally {
       this.working = false;
     }
@@ -176,6 +193,7 @@ export class NotificationWorker {
       this.database.query(`
         UPDATE notification_jobs SET status = 'succeeded', attempts = ?, last_http_status = ?, last_error = NULL, updated_at = ? WHERE id = ?
       `).run(attemptNumber, responseStatus, completedAt, job.id);
+      emitOrderEvent(job.order_id);
       return;
     }
 

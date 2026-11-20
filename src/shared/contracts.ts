@@ -31,12 +31,17 @@ export interface OrderRecord {
   alipay_account_log_id: string | null;
   alipay_order_no: string | null;
   buyer: string;
+  fee_rate_bp: number;
+  fee_cents: number;
+  merchant_name?: string;
 }
 
 export interface DashboardData {
   today_order_count: number;
   today_paid_count: number;
   today_paid_cents: number;
+  today_fee_cents: number;
+  merchant_count: number;
   pending_count: number;
   late_paid_count: number;
   notify_failed_count: number;
@@ -73,10 +78,7 @@ export interface PublicSettings {
   alipay_configured: boolean;
   v1_enabled: boolean;
   v2_enabled: boolean;
-  merchant_pid: string;
-  v1_key_masked: string;
   v2_platform_public_key: string;
-  v2_merchant_public_key: string;
   allow_private_callbacks: boolean;
 }
 
@@ -96,10 +98,45 @@ export interface CheckoutData {
   business_qr_url: string;
   return_url: string | null;
   return_target: string | null;
+  /** The merchant acknowledged the async notification, so its order page already reflects the payment. */
+  notify_delivered: boolean;
 }
 
 export interface ApiErrorBody {
   error: string;
   message: string;
   details?: unknown;
+}
+
+export interface PeriodStats {
+  order_count: number;
+  paid_count: number;
+  paid_cents: number;
+  fee_cents: number;
+  net_cents: number;
+}
+
+export interface MerchantStats {
+  today: PeriodStats;
+  yesterday: PeriodStats;
+  last_7_days: PeriodStats;
+  total: PeriodStats;
+}
+
+export interface MerchantSummary {
+  id: string;
+  pid: string;
+  name: string;
+  username: string | null;
+  login_enabled: boolean;
+  status: "active" | "disabled";
+  fee_rate_bp: number;
+  /** Percent string, e.g. "0.6". */
+  fee_rate: string;
+  v1_key_masked: string;
+  v2_public_key: string;
+  remark: string;
+  created_at: string;
+  updated_at: string;
+  stats?: MerchantStats;
 }

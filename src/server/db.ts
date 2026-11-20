@@ -161,6 +161,36 @@ CREATE TABLE IF NOT EXISTS admin_alerts (
 CREATE INDEX IF NOT EXISTS idx_admin_alerts_due ON admin_alerts(status, next_attempt_at);
 `;
 
+const MERCHANTS_MIGRATION = `
+CREATE TABLE IF NOT EXISTS merchants (
+  id TEXT PRIMARY KEY,
+  pid TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  username TEXT UNIQUE,
+  password_hash TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'disabled')),
+  fee_rate_bp INTEGER NOT NULL DEFAULT 0 CHECK(fee_rate_bp >= 0 AND fee_rate_bp <= 10000),
+  v1_key_enc TEXT NOT NULL,
+  v2_public_key TEXT NOT NULL DEFAULT '',
+  remark TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS merchant_sessions (
+  id TEXT PRIMARY KEY,
+  merchant_id TEXT NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  ip TEXT NOT NULL DEFAULT '',
+  user_agent TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_merchant_sessions_expires ON merchant_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_merchant_sessions_merchant ON merchant_sessions(merchant_id);
+`;
+
 const DEFAULT_SETTINGS: Record<string, unknown> = {
   setup_completed: false,
   public_base_url: "",
@@ -173,9 +203,7 @@ const DEFAULT_SETTINGS: Record<string, unknown> = {
   alipay_public_key: "",
   v1_enabled: true,
   v2_enabled: true,
-  merchant_pid: "",
   v2_platform_public_key: "",
-  v2_merchant_public_key: "",
   surcharge_max_cents: 99,
   telegram_enabled: false,
   telegram_chat_id: "",
@@ -215,6 +243,29 @@ export function createDatabase(path = getRuntimeEnv().databasePath): AppDatabase
       database.exec("ALTER TABLE payment_events ADD COLUMN ignored_at TEXT");
       database.exec("CREATE INDEX IF NOT EXISTS idx_payment_events_unmatched ON payment_events(direction, matched_order_id, occurred_at DESC)");
       database.query("INSERT INTO schema_migrations(version, applied_at) VALUES (3, ?)").run(now);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  if (!database.query("SELECT 1 FROM schema_migrations WHERE version = 4").get()) {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      database.exec(MERCHANTS_MIGRATION);
+      database.exec("ALTER TABLE orders ADD COLUMN fee_rate_bp INTEGER NOT NULL DEFAULT 0");
+      database.exec("ALTER TABLE orders ADD COLUMN fee_cents INTEGER NOT NULL DEFAULT 0");
+      database.exec("CREATE INDEX IF NOT EXISTS idx_orders_pid_created ON orders(pid, created_at DESC)");
+      // Carry the former single-merchant credentials over so existing integrations keep working.
+      const legacyPid = getSetting<string>(database, "merchant_pid", "");
+      const legacyKey = getSetting<string>(database, "v1_key", "");
+      if (legacyPid && legacyKey) {
+        database.query(`
+          INSERT INTO merchants(id, pid, name, status, fee_rate_bp, v1_key_enc, v2_public_key, created_at, updated_at)
+          VALUES (?, ?, '默认商户', 'active', 0, ?, ?, ?, ?)
+        `).run(crypto.randomUUID(), legacyPid, legacyKey, getSetting<string>(database, "v2_merchant_public_key", ""), now, now);
+      }
+      database.query("INSERT INTO schema_migrations(version, applied_at) VALUES (4, ?)").run(now);
       database.exec("COMMIT");
     } catch (error) {
       database.exec("ROLLBACK");

@@ -1,8 +1,8 @@
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { type FormEvent, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import useSWR from "swr";
-import type { OrderRecord, OrderStatus } from "@/shared/contracts";
+import type { MerchantSummary, OrderRecord, OrderStatus } from "@/shared/contracts";
 import { swrFetcher } from "@/web/api";
 import { PageHeader } from "@/web/components/page-header";
 import { StatusBadge } from "@/web/components/status-badge";
@@ -24,7 +24,10 @@ export function OrdersPage() {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<OrderStatus | "">("");
   const [page, setPage] = useState(1);
-  const path = `/admin-api/orders?page=${page}&limit=20&status=${encodeURIComponent(status)}&q=${encodeURIComponent(query)}`;
+  const [searchParams, setSearchParams] = useSearchParams();
+  const pid = searchParams.get("pid") ?? "";
+  const { data: merchants } = useSWR<{ data: MerchantSummary[] }>("/admin-api/merchants", swrFetcher);
+  const path = `/admin-api/orders?page=${page}&limit=20&status=${encodeURIComponent(status)}&q=${encodeURIComponent(query)}&pid=${encodeURIComponent(pid)}`;
   const { data, isLoading } = useSWR<OrdersResponse>(path, swrFetcher, { refreshInterval: 5_000 });
   const pages = Math.max(1, Math.ceil((data?.total ?? 0) / 20));
 
@@ -46,6 +49,15 @@ export function OrdersPage() {
             </form>
             <select
               className="h-9 rounded-md border bg-transparent px-3 text-sm"
+              value={pid}
+              onChange={(event) => { setSearchParams(event.target.value ? { pid: event.target.value } : {}); setPage(1); }}
+              aria-label="商户"
+            >
+              <option value="">全部商户</option>
+              {merchants?.data.map((merchant) => <option key={merchant.id} value={merchant.pid}>{merchant.name}（{merchant.pid}）</option>)}
+            </select>
+            <select
+              className="h-9 rounded-md border bg-transparent px-3 text-sm"
               value={status}
               onChange={(event) => { setStatus(event.target.value as OrderStatus | ""); setPage(1); }}
               aria-label="订单状态"
@@ -56,16 +68,18 @@ export function OrdersPage() {
 
           {isLoading ? <Loading /> : !data?.data.length ? <div className="py-16 text-center text-sm text-muted">没有符合条件的订单</div> : (
             <div className="overflow-x-auto scrollbar-thin">
-              <table className="w-full min-w-[900px] text-left text-sm">
-                <thead className="border-b text-xs text-muted"><tr><th className="pb-3 font-medium">平台订单号</th><th className="pb-3 font-medium">商户订单号</th><th className="pb-3 font-medium">接口</th><th className="pb-3 font-medium">金额</th><th className="pb-3 font-medium">实付</th><th className="pb-3 font-medium">状态</th><th className="pb-3 text-right font-medium">创建时间</th></tr></thead>
+              <table className="w-full min-w-[1080px] text-left text-sm">
+                <thead className="border-b text-xs text-muted"><tr><th className="pb-3 font-medium">平台订单号</th><th className="pb-3 font-medium">商户</th><th className="pb-3 font-medium">商户订单号</th><th className="pb-3 font-medium">接口</th><th className="pb-3 font-medium">金额</th><th className="pb-3 font-medium">实付</th><th className="pb-3 font-medium">手续费</th><th className="pb-3 font-medium">状态</th><th className="pb-3 text-right font-medium">创建时间</th></tr></thead>
                 <tbody className="divide-y">
                   {data?.data.map((order) => (
                     <tr key={order.id} className="hover:bg-foreground/[0.025]">
                       <td className="py-3 font-mono text-xs"><Link className="hover:text-primary" to={`/orders/${order.id}`}>{order.trade_no}</Link></td>
+                      <td className="max-w-32 truncate py-3">{order.merchant_name || <span className="font-mono text-xs text-muted">{order.pid}</span>}</td>
                       <td className="py-3 font-mono text-xs">{order.out_trade_no}</td>
                       <td className="py-3 uppercase text-muted">{order.api_version}</td>
                       <td className="py-3 font-mono">{formatMoney(order.requested_amount_cents)}</td>
                       <td className="py-3 font-mono">{formatMoney(order.payable_amount_cents)}</td>
+                      <td className="py-3 font-mono text-muted">{formatMoney(order.fee_cents)}</td>
                       <td className="py-3"><StatusBadge status={order.status} /></td>
                       <td className="py-3 text-right text-xs text-muted">{formatDate(order.created_at)}</td>
                     </tr>

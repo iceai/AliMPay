@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import useSWR from "swr";
 import { PAYMENT_POLL_INTERVAL_DEFAULT_SECONDS, type CheckoutData } from "@/shared/contracts";
-import { swrFetcher } from "@/web/api";
+import { apiFetch, swrFetcher } from "@/web/api";
 import { CopyButton } from "@/web/components/copy-button";
 import { Badge } from "@/web/components/ui/badge";
 import { Button } from "@/web/components/ui/button";
@@ -17,6 +17,20 @@ function countdown(milliseconds: number) {
   return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+type CheckoutState = "pending" | "paid" | "notified";
+
+function checkoutState(data: CheckoutData): CheckoutState {
+  if (data.status !== "paid" && data.status !== "late_paid") return "pending";
+  return data.notify_delivered ? "notified" : "paid";
+}
+
+/** Once paid, wait at most this long for the merchant to acknowledge the notification before returning anyway. */
+const MAX_WAIT_FOR_NOTIFY_MS = 5_000;
+/** Brief pause so the customer sees the success state before leaving. */
+const REDIRECT_DELAY_MS = 800;
+
+const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
 function isMobileBrowser() {
   const browserNavigator = navigator as Navigator & { userAgentData?: { mobile?: boolean } };
   if (browserNavigator.userAgentData?.mobile === true) return true;
@@ -28,7 +42,8 @@ export function CheckoutPage() {
   const { token = "" } = useParams();
   const [now, setNow] = useState(Date.now());
   const mobileRedirectAttempted = useRef(false);
-  const { data, error, isLoading } = useSWR<CheckoutData>(`/public-api/checkout/${encodeURIComponent(token)}`, swrFetcher, {
+  const checkoutPath = `/public-api/checkout/${encodeURIComponent(token)}`;
+  const { data, error, isLoading, mutate } = useSWR<CheckoutData>(checkoutPath, swrFetcher, {
     refreshInterval: (latest) => {
       if (latest && (["paid", "late_paid"].includes(latest.status) || Date.parse(latest.monitor_until) <= Date.now())) return 0;
       return (latest?.payment_poll_interval_seconds ?? PAYMENT_POLL_INTERVAL_DEFAULT_SECONDS) * 1_000;
@@ -40,10 +55,71 @@ export function CheckoutPage() {
     ([, uri]) => QRCode.toDataURL(uri, { width: 300, margin: 2, errorCorrectionLevel: "M", color: { dark: "#0f172a", light: "#f8fafc" } }),
   );
 
+  const latest = useRef<CheckoutData | undefined>(undefined);
+  latest.current = data;
+  const [paidSeenAt, setPaidSeenAt] = useState<number | null>(null);
+
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  // Long-poll so the page learns about the payment the moment the server matches it,
+  // instead of waiting for the next polling interval. Interval polling stays as a fallback.
+  useEffect(() => {
+    let stopped = false;
+    const controller = new AbortController();
+    void (async () => {
+      while (!stopped) {
+        const current = latest.current;
+        if (!current) { await sleep(300); continue; }
+        const state = checkoutState(current);
+        if (state === "notified") return;
+        if (state === "paid" && !current.return_target) return;
+        if (state === "pending" && Date.parse(current.monitor_until) <= Date.now()) return;
+        try {
+          const next = await apiFetch<CheckoutData>(`${checkoutPath}/wait?since=${state}`, { signal: controller.signal });
+          latest.current = next;
+          await mutate(next, { revalidate: false });
+        } catch {
+          if (stopped) return;
+          await sleep(2_000);
+        }
+      }
+    })();
+    return () => { stopped = true; controller.abort(); };
+  }, [checkoutPath, mutate]);
+
+  // Mobile browsers pause timers while the customer is in the Alipay app; refresh as soon as they come back.
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState === "visible") void mutate(); };
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("pageshow", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("pageshow", refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [mutate]);
+
+  const isPaid = data?.status === "paid" || data?.status === "late_paid";
+  const returnTarget = data?.return_target ?? null;
+  const notifyDelivered = data?.notify_delivered ?? false;
+  useEffect(() => {
+    if (isPaid && paidSeenAt === null) setPaidSeenAt(Date.now());
+  }, [isPaid, paidSeenAt]);
+
+  // Return to the merchant's order (card key) page automatically. Prefer waiting until the merchant
+  // has acknowledged the notification so that page already shows the delivered goods.
+  const redirectAt = isPaid && returnTarget && paidSeenAt !== null
+    ? (notifyDelivered ? paidSeenAt + REDIRECT_DELAY_MS : paidSeenAt + MAX_WAIT_FOR_NOTIFY_MS)
+    : null;
+  useEffect(() => {
+    if (redirectAt === null || !returnTarget) return;
+    const timer = window.setTimeout(() => window.location.replace(returnTarget), Math.max(0, redirectAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [redirectAt, returnTarget]);
 
   useEffect(() => {
     if (
@@ -70,7 +146,7 @@ export function CheckoutPage() {
   if (paid) {
     return (
       <main className="flex min-h-screen items-center justify-center px-4 py-12">
-        <Card className="w-full max-w-md"><CardContent className="px-6 py-10 text-center"><CheckCircle2 className="mx-auto size-12 text-success" /><Badge className="mt-5" variant={data.status === "late_paid" ? "primary" : "success"}>{data.status === "late_paid" ? "迟到支付已确认" : "支付成功"}</Badge><h1 className="mt-4 text-2xl font-semibold tracking-tight">已收到 ¥{data.payable_money}</h1><p className="mt-2 text-sm text-muted">订单 {data.out_trade_no} 已完成，商户通知正在后台投递。</p>{data.return_target ? <Button className="mt-6 w-full" asChild><a href={data.return_target}>返回商户页面<ExternalLink /></a></Button> : null}<p className="mt-5 text-xs text-muted">支付结果以商户服务器验签后的异步通知为准。</p></CardContent></Card>
+        <Card className="w-full max-w-md"><CardContent className="px-6 py-10 text-center"><CheckCircle2 className="mx-auto size-12 text-success" /><Badge className="mt-5" variant={data.status === "late_paid" ? "primary" : "success"}>{data.status === "late_paid" ? "迟到支付已确认" : "支付成功"}</Badge><h1 className="mt-4 text-2xl font-semibold tracking-tight">已收到 ¥{data.payable_money}</h1><p className="mt-2 text-sm text-muted">订单 {data.out_trade_no} 已完成{data.notify_delivered ? "，商户已确认收款。" : "，正在通知商户…"}</p>{data.return_target ? <><p className="mt-4 text-sm font-medium text-primary" role="status">{redirectAt !== null && redirectAt - now > 1_000 ? `${Math.ceil((redirectAt - now) / 1_000)} 秒后自动返回商户页面…` : "正在返回商户页面…"}</p><Button className="mt-4 w-full" asChild><a href={data.return_target}>立即返回商户页面<ExternalLink /></a></Button></> : null}<p className="mt-5 text-xs text-muted">支付结果以商户服务器验签后的异步通知为准。</p></CardContent></Card>
       </main>
     );
   }

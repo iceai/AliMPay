@@ -12,6 +12,7 @@ import { decryptSecret, encryptSecret } from "./security";
 
 export const SECRET_SETTING_KEYS = [
   "alipay_private_key",
+  /** Legacy single-merchant key; only read by the merchants migration. */
   "v1_key",
   "v2_platform_private_key",
   "telegram_bot_token",
@@ -35,7 +36,6 @@ export function getPaymentPollIntervalSeconds(database: AppDatabase) {
 }
 
 export function getPublicSettings(database: AppDatabase): PublicSettings {
-  const v1Key = getSecret(database, "v1_key");
   return {
     setup_completed: getSetting(database, "setup_completed", false),
     public_base_url: getSetting(database, "public_base_url", getRuntimeEnv().publicBaseUrl),
@@ -52,17 +52,14 @@ export function getPublicSettings(database: AppDatabase): PublicSettings {
     ),
     v1_enabled: getSetting(database, "v1_enabled", true),
     v2_enabled: getSetting(database, "v2_enabled", true),
-    merchant_pid: getSetting(database, "merchant_pid", ""),
-    v1_key_masked: v1Key ? `${v1Key.slice(0, 4)}••••••••${v1Key.slice(-4)}` : "",
     v2_platform_public_key: getSetting(database, "v2_platform_public_key", ""),
-    v2_merchant_public_key: getSetting(database, "v2_merchant_public_key", ""),
     allow_private_callbacks: getRuntimeEnv().allowPrivateCallbacks,
   };
 }
 
 export function isGatewayReady(database: AppDatabase) {
   const settings = getPublicSettings(database);
-  if (!settings.setup_completed || !settings.merchant_pid || !settings.alipay_configured) return false;
+  if (!settings.setup_completed || !settings.alipay_configured) return false;
   if (settings.collection_mode === "business_qr" && !settings.business_qr_url) return false;
   return true;
 }

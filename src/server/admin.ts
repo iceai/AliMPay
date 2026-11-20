@@ -30,6 +30,21 @@ import { getPublicSettings, getSecret, isGatewayReady, setSecret } from "./confi
 import { audit, getSetting, setSetting, type AppDatabase } from "./db";
 import { getRuntimeEnv } from "./env";
 import { AppError, assert } from "./errors";
+import {
+  createMerchant,
+  deleteMerchant,
+  getMerchantById,
+  getMerchantV1Key,
+  insertMerchant,
+  listMerchants,
+  merchantNamesByPid,
+  merchantStats,
+  parseFeeRate,
+  regenerateMerchantV1Key,
+  serializeMerchant,
+  setMerchantV2PublicKey,
+  updateMerchant,
+} from "./merchants";
 import { notificationHistory, queueManualNotification } from "./notifications";
 import {
   candidatePaymentsForOrder,
@@ -46,8 +61,6 @@ import {
 import { sendTelegramMessage, telegramConfig } from "./telegram";
 import {
   generateRsaKeyPair,
-  randomAlphaNumeric,
-  randomMerchantPid,
   sha256,
   validatePrivateKey,
   validatePublicKey,
@@ -64,6 +77,32 @@ const loginSchema = z.object({
   username: z.string().default("admin"),
   password: z.string().min(1).max(128),
 });
+
+const merchantStatus = z.enum(["active", "disabled"]);
+const feeRateInput = z.union([z.string(), z.number()]).transform(String);
+
+const merchantCreateSchema = z.object({
+  name: z.string().min(1, "商户名称不能为空").max(64),
+  username: z.string().max(32).optional(),
+  password: z.string().max(128).optional(),
+  fee_rate: feeRateInput.optional(),
+  remark: z.string().max(500).optional(),
+  status: merchantStatus.optional(),
+});
+
+const merchantUpdateSchema = z.object({
+  name: z.string().min(1, "商户名称不能为空").max(64).optional(),
+  username: z.string().max(32).nullable().optional(),
+  password: z.string().max(128).optional(),
+  fee_rate: feeRateInput.optional(),
+  remark: z.string().max(500).optional(),
+  status: merchantStatus.optional(),
+}).strict();
+
+function withMerchantNames<T extends { pid: string }>(database: AppDatabase, orders: T[]) {
+  const names = merchantNamesByPid(database);
+  return orders.map((order) => ({ ...order, merchant_name: names.get(order.pid) ?? "" }));
+}
 
 function validatePublicBaseUrl(value: string) {
   const url = new URL(value);
@@ -127,10 +166,10 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
         INSERT INTO admin_users(id, username, password_hash, created_at, updated_at) VALUES (?, 'admin', ?, ?, ?)
       `).run(userId, passwordHash, now, now);
       setSetting(database, "public_base_url", publicBase);
-      setSetting(database, "merchant_pid", randomMerchantPid());
-      setSecret(database, "v1_key", randomAlphaNumeric(32));
       setSecret(database, "v2_platform_private_key", platformPair.privateKey);
       setSetting(database, "v2_platform_public_key", platformPair.publicKey);
+      // Seed one merchant so a single-merchant deployment works without extra steps.
+      if (listMerchants(database).length === 0) insertMerchant(database, { name: "默认商户" });
       setSetting(database, "setup_completed", true);
       audit(database, "system.setup", { actor: "admin", ip: clientIp(c.req.raw.headers) });
       database.exec("COMMIT");
@@ -186,9 +225,10 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
       SELECT
         COUNT(*) AS today_order_count,
         SUM(CASE WHEN status IN ('paid','late_paid') THEN 1 ELSE 0 END) AS today_paid_count,
-        COALESCE(SUM(CASE WHEN status IN ('paid','late_paid') THEN requested_amount_cents ELSE 0 END), 0) AS today_paid_cents
+        COALESCE(SUM(CASE WHEN status IN ('paid','late_paid') THEN requested_amount_cents ELSE 0 END), 0) AS today_paid_cents,
+        COALESCE(SUM(CASE WHEN status IN ('paid','late_paid') THEN fee_cents ELSE 0 END), 0) AS today_fee_cents
       FROM orders WHERE created_at >= ?
-    `).get(today) as { today_order_count: number; today_paid_count: number; today_paid_cents: number };
+    `).get(today) as { today_order_count: number; today_paid_count: number; today_paid_cents: number; today_fee_cents: number };
     const statuses = database.query(`
       SELECT
         SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
@@ -198,7 +238,7 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     `).get(new Date().toISOString()) as { pending_count: number; late_paid_count: number; active_monitors: number };
     const notifyFailed = (database.query("SELECT COUNT(*) AS count FROM notification_jobs WHERE status = 'failed'").get() as { count: number }).count;
     const lastScan = database.query("SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1").get();
-    const recentOrders = listOrders(database, { limit: 8 }).data;
+    const recentOrders = withMerchantNames(database, listOrders(database, { limit: 8 }).data);
     return c.json({
       ...totals,
       pending_count: statuses.pending_count ?? 0,
@@ -206,6 +246,7 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
       active_monitors: statuses.active_monitors ?? 0,
       notify_failed_count: notifyFailed,
       unmatched_payment_count: countUnmatchedPayments(database),
+      merchant_count: listMerchants(database).length,
       last_scan: lastScan,
       recent_orders: recentOrders,
       configured: isGatewayReady(database),
@@ -223,10 +264,11 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     const result = listOrders(database, {
       status,
       query: c.req.query("q")?.trim(),
+      pid: c.req.query("pid")?.trim() || undefined,
       limit,
       offset: (page - 1) * limit,
     });
-    return c.json({ ...result, page });
+    return c.json({ ...result, data: withMerchantNames(database, result.data), page });
   });
 
   app.get("/orders/:id", (c) => {
@@ -234,7 +276,7 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     assert(order, 404, "ORDER_NOT_FOUND", "订单不存在");
     const events = database.query("SELECT * FROM payment_events WHERE matched_order_id = ? ORDER BY id DESC").all(order.id);
     return c.json({
-      order,
+      order: withMerchantNames(database, [order])[0],
       payment_events: events,
       candidate_payments: candidatePaymentsForOrder(database, order),
       notifications: notificationHistory(database, order.id),
@@ -344,7 +386,6 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     alipay_public_key: getSetting(database, "alipay_public_key", ""),
     alipay_app_public_key: getSetting(database, "alipay_app_public_key", ""),
     has_alipay_private_key: Boolean(getSecret(database, "alipay_private_key")),
-    has_v1_key: Boolean(getSecret(database, "v1_key")),
     has_v2_platform_private_key: Boolean(getSecret(database, "v2_platform_private_key")),
   }));
 
@@ -439,42 +480,12 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
 
   app.post("/keys/alipay/private/reveal", (c) => c.json({ private_key: getSecret(database, "alipay_private_key") }));
 
-  app.post("/keys/v1/regenerate", (c) => {
-    const pid = getSetting(database, "merchant_pid", "") || randomMerchantPid();
-    const key = randomAlphaNumeric(32);
-    setSetting(database, "merchant_pid", pid);
-    setSecret(database, "v1_key", key);
-    audit(database, "keys.v1_regenerate", { actor: c.get("admin").username });
-    return c.json({ pid, key });
-  });
-
-  app.post("/keys/v1/reveal", (c) => c.json({
-    pid: getSetting(database, "merchant_pid", ""),
-    key: getSecret(database, "v1_key"),
-  }));
-
   app.post("/keys/v2/platform/regenerate", (c) => {
     const pair = generateRsaKeyPair();
     setSecret(database, "v2_platform_private_key", pair.privateKey);
     setSetting(database, "v2_platform_public_key", pair.publicKey);
     audit(database, "keys.v2_platform_regenerate", { actor: c.get("admin").username });
     return c.json({ private_key: pair.privateKey, public_key: pair.publicKey });
-  });
-
-  app.post("/keys/v2/merchant/generate", (c) => {
-    const pair = generateRsaKeyPair();
-    setSetting(database, "v2_merchant_public_key", pair.publicKey);
-    audit(database, "keys.v2_merchant_generate", { actor: c.get("admin").username });
-    return c.json({ private_key: pair.privateKey, public_key: pair.publicKey, one_time: true });
-  });
-
-  app.put("/keys/v2/merchant", async (c) => {
-    const body = await c.req.json<{ public_key?: string }>();
-    assert(body.public_key, 400, "PUBLIC_KEY_REQUIRED", "商户公钥不能为空");
-    validatePublicKey(body.public_key);
-    setSetting(database, "v2_merchant_public_key", toSpkiPublicKey(body.public_key));
-    audit(database, "keys.v2_merchant_import", { actor: c.get("admin").username });
-    return c.json({ ok: true });
   });
 
   app.post("/alipay/test", async (c) => {
@@ -516,9 +527,99 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     });
   });
 
+  // ---------- Merchants ----------
+
+  app.get("/merchants", (c) => c.json({
+    data: listMerchants(database).map((merchant) => serializeMerchant(database, merchant, true)),
+    totals: merchantStats(database),
+  }));
+
+  app.post("/merchants", async (c) => {
+    const parsed = merchantCreateSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) throw new AppError(400, "INVALID_MERCHANT", parsed.error.issues[0]?.message ?? "商户参数错误");
+    const { merchant, v1Key } = await createMerchant(database, {
+      name: parsed.data.name,
+      username: parsed.data.username || null,
+      password: parsed.data.password || null,
+      feeRateBp: parseFeeRate(parsed.data.fee_rate ?? "0"),
+      remark: parsed.data.remark,
+      status: parsed.data.status,
+    });
+    audit(database, "merchant.create", {
+      actor: c.get("admin").username, targetType: "merchant", targetId: merchant.id, ip: clientIp(c.req.raw.headers),
+      details: { pid: merchant.pid, fee_rate_bp: merchant.fee_rate_bp },
+    });
+    return c.json({ merchant: serializeMerchant(database, merchant), pid: merchant.pid, key: v1Key }, 201);
+  });
+
+  app.get("/merchants/:id", (c) => {
+    const merchant = getMerchantById(database, c.req.param("id"));
+    assert(merchant, 404, "MERCHANT_NOT_FOUND", "商户不存在");
+    return c.json({
+      merchant: serializeMerchant(database, merchant, true),
+      recent_orders: listOrders(database, { pid: merchant.pid, limit: 10 }).data,
+    });
+  });
+
+  app.put("/merchants/:id", async (c) => {
+    const parsed = merchantUpdateSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) throw new AppError(400, "INVALID_MERCHANT", parsed.error.issues[0]?.message ?? "商户参数错误");
+    const body = parsed.data;
+    const merchant = await updateMerchant(database, c.req.param("id"), {
+      name: body.name,
+      username: body.username === undefined ? undefined : body.username || null,
+      password: body.password || undefined,
+      feeRateBp: body.fee_rate === undefined ? undefined : parseFeeRate(body.fee_rate),
+      remark: body.remark,
+      status: body.status,
+    });
+    audit(database, "merchant.update", {
+      actor: c.get("admin").username, targetType: "merchant", targetId: merchant.id, ip: clientIp(c.req.raw.headers),
+      details: { keys: Object.keys(body).filter((key) => key !== "password"), password_reset: Boolean(body.password), fee_rate_bp: merchant.fee_rate_bp },
+    });
+    return c.json({ ok: true, merchant: serializeMerchant(database, merchant) });
+  });
+
+  app.delete("/merchants/:id", (c) => {
+    const merchant = deleteMerchant(database, c.req.param("id"));
+    audit(database, "merchant.delete", { actor: c.get("admin").username, targetType: "merchant", targetId: merchant.id, details: { pid: merchant.pid } });
+    return c.json({ ok: true });
+  });
+
+  app.post("/merchants/:id/keys/v1/reveal", (c) => {
+    const merchant = getMerchantById(database, c.req.param("id"));
+    assert(merchant, 404, "MERCHANT_NOT_FOUND", "商户不存在");
+    audit(database, "merchant.v1_reveal", { actor: c.get("admin").username, targetType: "merchant", targetId: merchant.id });
+    return c.json({ pid: merchant.pid, key: getMerchantV1Key(merchant) });
+  });
+
+  app.post("/merchants/:id/keys/v1/regenerate", (c) => {
+    const key = regenerateMerchantV1Key(database, c.req.param("id"));
+    const merchant = getMerchantById(database, c.req.param("id"))!;
+    audit(database, "merchant.v1_regenerate", { actor: c.get("admin").username, targetType: "merchant", targetId: merchant.id });
+    return c.json({ pid: merchant.pid, key });
+  });
+
+  app.post("/merchants/:id/keys/v2/generate", (c) => {
+    const pair = generateRsaKeyPair();
+    setMerchantV2PublicKey(database, c.req.param("id"), pair.publicKey);
+    audit(database, "merchant.v2_generate", { actor: c.get("admin").username, targetType: "merchant", targetId: c.req.param("id") });
+    return c.json({ private_key: pair.privateKey, public_key: pair.publicKey, one_time: true });
+  });
+
+  app.put("/merchants/:id/keys/v2", async (c) => {
+    const body = await c.req.json<{ public_key?: string }>().catch(() => ({} as { public_key?: string }));
+    const publicKey = body.public_key?.trim() ?? "";
+    assert(publicKey, 400, "PUBLIC_KEY_REQUIRED", "商户公钥不能为空");
+    setMerchantV2PublicKey(database, c.req.param("id"), publicKey);
+    audit(database, "merchant.v2_import", { actor: c.get("admin").username, targetType: "merchant", targetId: c.req.param("id") });
+    return c.json({ ok: true });
+  });
+
   app.get("/docs", (c) => c.json({
     base_url: getSetting(database, "public_base_url", ""),
-    pid: getSetting(database, "merchant_pid", ""),
+    pid: "",
+    platform_public_key: getSetting(database, "v2_platform_public_key", ""),
     pay_type: "alipay",
     v1: {
       submit: "/submit.php",

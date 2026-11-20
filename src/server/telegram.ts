@@ -1,6 +1,7 @@
 import { getSecret } from "./config";
 import { getSetting, type AppDatabase } from "./db";
 import { AppError } from "./errors";
+import { getMerchantByPid } from "./merchants";
 import { formatApiDate, getOrderById, getPaymentEvent, suggestOrdersForPayment } from "./orders";
 import { centsToMoney } from "./security";
 
@@ -80,6 +81,7 @@ export function buildAlertMessage(database: AppDatabase, alert: Pick<AlertRow, "
   if (succeededLater) return null;
   return [
     "❌ 商户回调通知失败",
+    `商户：${getMerchantByPid(database, order.pid)?.name ?? "未知"}（PID ${order.pid}）`,
     `订单：${order.name} ¥${centsToMoney(order.requested_amount_cents)}`,
     `商户单号：${order.out_trade_no}`,
     `已尝试 ${job.attempts} 次，最后结果：${job.last_http_status ? `HTTP ${job.last_http_status} ` : ""}${job.last_error ?? "未知错误"}`.slice(0, 600),

@@ -8,6 +8,7 @@ import {
   Menu,
   ReceiptText,
   Settings2,
+  Store,
   WalletCards,
 } from "lucide-react";
 import { useState } from "react";
@@ -23,6 +24,7 @@ const navigation = [
   { to: "/dashboard", label: "仪表盘", icon: LayoutDashboard },
   { to: "/orders", label: "订单", icon: ReceiptText },
   { to: "/payments", label: "未匹配收款", icon: CircleAlert },
+  { to: "/merchants", label: "商户管理", icon: Store },
   { to: "/settings", label: "收款配置", icon: Settings2 },
   { to: "/keys", label: "密钥中心", icon: KeyRound },
   { to: "/docs", label: "API 文档", icon: BookOpenText },
@@ -39,7 +41,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         <span className="flex size-8 items-center justify-center rounded-md bg-primary text-background"><WalletCards className="size-4" /></span>
         <div>
           <div className="text-sm font-semibold">AliMPay</div>
-          <div className="text-xs text-muted">单商户收款网关</div>
+          <div className="text-xs text-muted">多商户收款网关</div>
         </div>
       </div>
       <nav className="flex-1 space-y-1 p-3" aria-label="后台导航">

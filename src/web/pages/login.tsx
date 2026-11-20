@@ -1,6 +1,6 @@
 import { LogIn, WalletCards } from "lucide-react";
 import { type FormEvent, useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import useSWR, { mutate } from "swr";
 import { apiFetch, jsonBody, swrFetcher } from "@/web/api";
 import { Button } from "@/web/components/ui/button";
@@ -43,7 +43,7 @@ export function LoginPage() {
         <Card>
           <CardHeader>
             <CardTitle>管理员登录</CardTitle>
-            <CardDescription>单用户部署，用户名固定为 admin。</CardDescription>
+            <CardDescription>平台管理员账号，用户名固定为 admin。</CardDescription>
           </CardHeader>
           <CardContent>
             <form className="space-y-4" onSubmit={submit}>
@@ -54,6 +54,7 @@ export function LoginPage() {
             </form>
           </CardContent>
         </Card>
+        <p className="mt-4 text-center text-xs text-muted"><Link className="hover:text-foreground" to="/merchant/login">商户登录入口</Link></p>
       </div>
     </main>
   );

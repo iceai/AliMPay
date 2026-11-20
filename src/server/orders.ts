@@ -4,6 +4,8 @@ import { AppError, assert } from "./errors";
 import { centsToMoney, parseMoneyToCents, randomDigits, randomToken, validateCallbackUrl } from "./security";
 import { getRuntimeEnv } from "./env";
 import { getPaymentPollIntervalSeconds, getSecret } from "./config";
+import { calculateFee, getMerchantByPid } from "./merchants";
+import { emitOrderEvent } from "./order-events";
 
 export interface CreateOrderInput {
   pid: string;
@@ -104,6 +106,10 @@ export function createOrder(database: AppDatabase, rawInput: CreateOrderInput): 
       assert(allocated, 429, "AMOUNT_POOL_EXHAUSTED", "当前相同金额的待支付订单过多，请十分钟后重试");
     }
 
+    // Snapshot the merchant's rate so later rate changes never rewrite historical fees.
+    const feeRateBp = getMerchantByPid(database, input.pid)?.fee_rate_bp ?? 0;
+    const feeCents = calculateFee(input.requestedAmountCents, feeRateBp);
+
     const id = crypto.randomUUID();
     const tradeNo = createTradeNo();
     const checkoutToken = randomToken(24);
@@ -118,13 +124,13 @@ export function createOrder(database: AppDatabase, rawInput: CreateOrderInput): 
         id, trade_no, pid, api_version, out_trade_no, name,
         requested_amount_cents, payable_amount_cents, collection_mode,
         notify_url, return_url, param, client_ip, checkout_token,
-        status, created_at, expires_at, monitor_until, raw_request_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+        status, created_at, expires_at, monitor_until, raw_request_json, fee_rate_bp, fee_cents
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
     `).run(
       id, tradeNo, input.pid, input.apiVersion, input.outTradeNo, input.name,
       input.requestedAmountCents, payableAmountCents, collectionMode,
       input.notifyUrl, input.returnUrl, input.param, input.clientIp, checkoutToken,
-      now, expiresAt, monitorUntil, JSON.stringify(rawRequest),
+      now, expiresAt, monitorUntil, JSON.stringify(rawRequest), feeRateBp, feeCents,
     );
 
     if (collectionMode === "business_qr") {
@@ -275,6 +281,7 @@ export function recordAndMatchPayment(database: AppDatabase, event: AccountLogEv
     }
 
     database.exec("COMMIT");
+    if (matchedOrder) emitOrderEvent(matchedOrder.id);
     return { matched: Boolean(matchedOrder), duplicate: false, orderId: matchedOrder?.id ?? null, eventId: inserted.id };
   } catch (error) {
     database.exec("ROLLBACK");
@@ -403,6 +410,7 @@ export function linkPaymentToOrder(database: AppDatabase, eventId: number, order
       VALUES (?, ?, 'pending', 0, 10, ?, 0, ?, ?)
     `).run(crypto.randomUUID(), order.id, now, now, now);
     database.exec("COMMIT");
+    emitOrderEvent(order.id);
     return { order: getOrderById(database, order.id)!, amountMismatch: event.amount_cents !== order.payable_amount_cents };
   } catch (error) {
     database.exec("ROLLBACK");
@@ -525,7 +533,13 @@ export function getCheckoutData(database: AppDatabase, token: string, signedRetu
     business_qr_url: businessQrUrl,
     return_url: order.return_url,
     return_target: signedReturnUrl ?? null,
+    notify_delivered: isNotifyDelivered(database, order.id),
   };
+}
+
+/** True once the merchant has acknowledged a payment notification with "success". */
+export function isNotifyDelivered(database: AppDatabase, orderId: string) {
+  return Boolean(database.query("SELECT 1 FROM notification_jobs WHERE order_id = ? AND status = 'succeeded' LIMIT 1").get(orderId));
 }
 
 export function getOrderByCheckoutToken(database: AppDatabase, token: string) {

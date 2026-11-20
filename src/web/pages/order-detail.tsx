@@ -90,6 +90,7 @@ export function OrderDetailPage() {
           <CardHeader><CardTitle>订单信息</CardTitle><CardDescription>订单过期后仍保留；第 10 分钟后不再自动匹配，迟到的付款会进入“未匹配收款”等待人工关联。</CardDescription></CardHeader>
           <CardContent>
             <dl className="grid gap-5 sm:grid-cols-2">
+              <Field label="商户" value={`${order.merchant_name || "未知商户"}（PID ${order.pid}）`} /><Field label="手续费" value={`${formatMoney(order.fee_cents)}（费率 ${order.fee_rate_bp / 100}%）`} />
               <Field label="平台订单号" value={order.trade_no} mono /><Field label="商户订单号" value={order.out_trade_no} mono />
               <Field label="协议版本" value={order.api_version.toUpperCase()} /><Field label="收款方式" value={order.collection_mode === "business_qr" ? "经营码金额匹配" : "转账备注匹配"} />
               <Field label="创建时间" value={formatDate(order.created_at)} /><Field label="收银台过期" value={formatDate(order.expires_at)} />

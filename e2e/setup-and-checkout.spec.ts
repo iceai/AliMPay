@@ -38,6 +38,8 @@ test("first-run setup, key generation, QR upload and public checkout", async ({ 
   await page.getByRole("button", { name: "导入私钥" }).click();
   await expect(page.getByText("应用私钥已导入")).toBeVisible();
 
+  await page.getByRole("link", { name: "商户管理", exact: true }).click();
+  await page.getByRole("link", { name: "默认商户" }).click();
   await page.getByRole("button", { name: "生成商户密钥对" }).click();
   const merchantDisclosure = page.getByRole("dialog");
   await expect(merchantDisclosure.getByText(/私钥只在本次响应中展示/)).toBeVisible();
@@ -68,7 +70,8 @@ test("first-run setup, key generation, QR upload and public checkout", async ({ 
   await page.reload();
   await expect(page.getByLabel("支付轮询间隔（秒）")).toHaveValue("2");
 
-  await page.getByRole("link", { name: "密钥中心" }).click();
+  await page.getByRole("link", { name: "商户管理", exact: true }).click();
+  await page.getByRole("link", { name: "默认商户" }).click();
   await page.getByRole("button", { name: "查看凭据" }).click();
   const credentials = await page.getByRole("dialog").locator("textarea").inputValue();
   const pid = credentials.match(/PID=(\d+)/)?.[1] ?? "";
@@ -95,6 +98,45 @@ test("first-run setup, key generation, QR upload and public checkout", async ({ 
   await page.goto(order.payurl);
   await expect(page.getByRole("heading", { name: "¥1.00" })).toBeVisible({ timeout: 12_000 });
   await expect(page.getByAltText("支付宝经营码")).toBeVisible();
+
+  // A second merchant with its own key, a fee rate and its own portal shares the same QR code.
+  await page.goto("/merchants");
+  await page.getByRole("button", { name: "新建商户" }).first().click();
+  await page.getByLabel("商户名称").fill("E2E Shop");
+  await page.getByLabel("后台登录用户名").fill("e2eshop");
+  await page.getByLabel("后台登录密码").fill("e2e-shop-password");
+  await page.getByLabel("手续费（%）").fill("2");
+  await page.getByRole("button", { name: "创建商户" }).click();
+  const shopCredentials = await page.getByRole("dialog").locator("textarea").inputValue();
+  const shopPid = shopCredentials.match(/PID=(\d+)/)?.[1] ?? "";
+  const shopKey = shopCredentials.match(/KEY=([^\n]+)/)?.[1] ?? "";
+  expect(shopPid).not.toBe(pid);
+  expect(shopKey).not.toBe(key);
+  await page.getByRole("dialog").getByRole("button", { name: "关闭" }).click();
+  await expect(page.getByRole("link", { name: "E2E Shop" })).toBeVisible();
+
+  const shopOrder = { ...unsigned, pid: shopPid, out_trade_no: `SHOP-${Date.now()}`, money: "10.00" };
+  const shopResponse = await request.post("/mapi.php", { form: { ...shopOrder, sign: md5(shopOrder, shopKey) } });
+  const shopBody = await shopResponse.json() as { code: number; payurl: string };
+  expect(shopBody.code).toBe(1);
+  const crossedOrder = { ...shopOrder, pid, out_trade_no: "CROSS-1" };
+  const crossed = await request.post("/mapi.php", { form: { ...crossedOrder, sign: md5(crossedOrder, shopKey) } });
+  expect((await crossed.json() as { code: number }).code).toBe(-1);
+  await page.goto(shopBody.payurl);
+  await expect(page.getByAltText("支付宝经营码")).toBeVisible({ timeout: 12_000 });
+
+  await page.goto("/merchant/login");
+  await page.getByLabel("用户名").fill("e2eshop");
+  await page.getByLabel("密码").fill("e2e-shop-password");
+  await page.getByRole("button", { name: /^登录/ }).click();
+  await expect(page.getByRole("heading", { name: "数据概览" })).toBeVisible();
+  await expect(page.getByText("当前手续费率 2%")).toBeVisible();
+  await page.getByRole("link", { name: "订单", exact: true }).click();
+  await expect(page.getByText(shopOrder.out_trade_no)).toBeVisible();
+  await expect(page.getByText(unsigned.out_trade_no)).toHaveCount(0);
+  await expect(page.getByRole("cell", { name: "¥0.20" })).toBeVisible();
+  await page.getByRole("link", { name: "API 对接" }).click();
+  await expect(page.getByText(shopPid).first()).toBeVisible();
 });
 
 test("mobile navigation is usable and transfer checkout opens Alipay", async ({ page }, testInfo) => {
@@ -107,7 +149,8 @@ test("mobile navigation is usable and transfer checkout opens Alipay", async ({ 
   await page.getByRole("button", { name: "打开导航" }).click();
   await expect(page.getByRole("dialog").getByRole("link", { name: "订单" })).toBeVisible();
 
-  await page.getByRole("dialog").getByRole("link", { name: "密钥中心" }).click();
+  await page.getByRole("dialog").getByRole("link", { name: "商户管理", exact: true }).click();
+  await page.getByRole("link", { name: "默认商户" }).click();
   await page.getByRole("button", { name: "查看凭据" }).click();
   const credentials = await page.getByRole("dialog").locator("textarea").inputValue();
   const pid = credentials.match(/PID=(\d+)/)?.[1] ?? "";

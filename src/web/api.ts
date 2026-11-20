@@ -23,7 +23,9 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     headers.set("content-type", "application/json");
   }
   if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
-    headers.set("x-csrf-token", decodeURIComponent(cookie("alimpay_csrf")));
+    // Admin and merchant sessions can coexist in one browser, so each has its own CSRF cookie.
+    const csrfCookie = path.startsWith("/merchant-api/") ? "alimpay_merchant_csrf" : "alimpay_csrf";
+    headers.set("x-csrf-token", decodeURIComponent(cookie(csrfCookie)));
   }
   const response = await fetch(path, { ...init, method, headers, credentials: "same-origin" });
   const contentType = response.headers.get("content-type") ?? "";

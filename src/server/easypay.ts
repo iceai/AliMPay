@@ -1,9 +1,9 @@
 import { Hono, type Context } from "hono";
 import type { OrderRecord, TransferLinkLayer } from "../shared/contracts";
 import type { PaymentScanner } from "./alipay";
-import { getSecret } from "./config";
 import { getSetting, type AppDatabase } from "./db";
 import { AppError, assert } from "./errors";
+import { formatFeeRate, getMerchantV1Key, merchantStats, requireActiveMerchant } from "./merchants";
 import {
   createOrder,
   findOrder,
@@ -45,35 +45,33 @@ function checkoutUrl(database: AppDatabase, order: OrderRecord) {
   return `${publicBaseUrl(database)}/checkout/${encodeURIComponent(order.checkout_token)}`;
 }
 
-function checkMerchant(database: AppDatabase, pid: string) {
-  const expected = getSetting(database, "merchant_pid", "");
-  assert(expected && secureEqual(pid, expected), 401, "INVALID_MERCHANT", "商户 ID 错误");
-}
-
 function verifyV1(database: AppDatabase, parameters: Parameters) {
   assert(getSetting(database, "v1_enabled", true), 403, "V1_DISABLED", "V1 API 已关闭");
-  checkMerchant(database, parameters.pid ?? "");
+  const merchant = requireActiveMerchant(database, parameters.pid ?? "");
   assert((parameters.sign_type ?? "").toUpperCase() === "MD5", 401, "INVALID_SIGN_TYPE", "sign_type 必须为 MD5");
-  const key = getSecret(database, "v1_key");
+  const key = getMerchantV1Key(merchant);
   assert(key && verifyMd5(parameters, key), 401, "INVALID_SIGNATURE", "MD5 签名校验失败");
+  return merchant;
 }
 
 function verifyV1Key(database: AppDatabase, parameters: Parameters) {
   assert(getSetting(database, "v1_enabled", true), 403, "V1_DISABLED", "V1 API 已关闭");
-  checkMerchant(database, parameters.pid ?? "");
-  const key = getSecret(database, "v1_key");
+  const merchant = requireActiveMerchant(database, parameters.pid ?? "");
+  const key = getMerchantV1Key(merchant);
   assert(key && secureEqual(parameters.key ?? "", key), 401, "INVALID_KEY", "商户密钥错误");
+  return { merchant, key };
 }
 
 function verifyV2(database: AppDatabase, parameters: Parameters) {
   assert(getSetting(database, "v2_enabled", true), 403, "V2_DISABLED", "V2 API 已关闭");
-  checkMerchant(database, parameters.pid ?? "");
+  const merchant = requireActiveMerchant(database, parameters.pid ?? "");
   assert((parameters.sign_type ?? "").toUpperCase() === "RSA", 401, "INVALID_SIGN_TYPE", "sign_type 必须为 RSA");
   assert(/^\d{10}$/.test(parameters.timestamp ?? ""), 401, "INVALID_TIMESTAMP", "timestamp 必须是 10 位秒级时间戳");
   const timestamp = Number(parameters.timestamp);
   assert(Math.abs(Math.floor(Date.now() / 1_000) - timestamp) <= 300, 401, "TIMESTAMP_EXPIRED", "timestamp 与服务器时间相差超过 300 秒");
-  const merchantPublicKey = getSetting(database, "v2_merchant_public_key", "");
-  assert(merchantPublicKey && rsaVerify(parameters, merchantPublicKey), 401, "INVALID_SIGNATURE", "RSA 签名校验失败");
+  assert(merchant.v2_public_key, 401, "V2_KEY_MISSING", "商户尚未登记 V2 RSA 公钥");
+  assert(rsaVerify(parameters, merchant.v2_public_key), 401, "INVALID_SIGNATURE", "RSA 签名校验失败");
+  return merchant;
 }
 
 function signedV2(database: AppDatabase, payload: Record<string, unknown>) {
@@ -131,23 +129,6 @@ async function refreshedOrder(database: AppDatabase, scanner: PaymentScanner, pa
   return null;
 }
 
-function merchantStats(database: AppDatabase) {
-  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
-  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? "";
-  const todayIso = new Date(`${part("year")}-${part("month")}-${part("day")}T00:00:00+08:00`).toISOString();
-  const yesterdayIso = new Date(Date.parse(todayIso) - 86_400_000).toISOString();
-  const total = (database.query("SELECT COUNT(*) AS count FROM orders").get() as { count: number }).count;
-  const today = database.query(`
-    SELECT COUNT(*) AS count, COALESCE(SUM(CASE WHEN status IN ('paid','late_paid') THEN requested_amount_cents ELSE 0 END), 0) AS cents
-    FROM orders WHERE created_at >= ?
-  `).get(todayIso) as { count: number; cents: number };
-  const yesterday = database.query(`
-    SELECT COUNT(*) AS count, COALESCE(SUM(CASE WHEN status IN ('paid','late_paid') THEN requested_amount_cents ELSE 0 END), 0) AS cents
-    FROM orders WHERE created_at >= ? AND created_at < ?
-  `).get(yesterdayIso, todayIso) as { count: number; cents: number };
-  return { total, today, yesterday };
-}
-
 export function createEasyPayRoutes(database: AppDatabase, scanner: PaymentScanner) {
   const app = new Hono();
 
@@ -187,22 +168,23 @@ export function createEasyPayRoutes(database: AppDatabase, scanner: PaymentScann
   app.on(["GET", "POST"], "/api.php", async (c) => {
     try {
       const parameters = await requestParameters(c);
-      verifyV1Key(database, parameters);
+      const { merchant, key } = verifyV1Key(database, parameters);
       const act = parameters.act;
       if (act === "query") {
-        const stats = merchantStats(database);
+        const stats = merchantStats(database, merchant.pid);
         return c.json({
           code: 1,
-          pid: Number(parameters.pid),
-          key: getSecret(database, "v1_key"),
+          pid: Number(merchant.pid),
+          key,
           active: 1,
           money: "0.00",
           type: 0,
           account: "",
-          username: "admin",
-          orders: stats.total,
-          order_today: stats.today.count,
-          order_lastday: stats.yesterday.count,
+          username: merchant.username ?? merchant.name,
+          fee_rate: formatFeeRate(merchant.fee_rate_bp),
+          orders: stats.total.order_count,
+          order_today: stats.today.order_count,
+          order_lastday: stats.yesterday.order_count,
         });
       }
       if (act === "order") {
@@ -280,24 +262,25 @@ export function createEasyPayRoutes(database: AppDatabase, scanner: PaymentScann
   app.post("/api/merchant/info", async (c) => {
     try {
       const parameters = await requestParameters(c);
-      verifyV2(database, parameters);
-      const stats = merchantStats(database);
+      const merchant = verifyV2(database, parameters);
+      const stats = merchantStats(database, merchant.pid);
       return c.json(signedV2(database, {
         code: 0,
         msg: "success",
-        pid: Number(parameters.pid),
+        pid: Number(merchant.pid),
         status: 1,
         pay_status: 1,
         settle_status: 0,
         money: "0.00",
+        fee_rate: formatFeeRate(merchant.fee_rate_bp),
         settle_type: 0,
         settle_account: "",
         settle_name: "",
-        order_num: stats.total,
-        order_num_today: stats.today.count,
-        order_num_lastday: stats.yesterday.count,
-        order_money_today: centsToMoney(stats.today.cents),
-        order_money_lastday: centsToMoney(stats.yesterday.cents),
+        order_num: stats.total.order_count,
+        order_num_today: stats.today.order_count,
+        order_num_lastday: stats.yesterday.order_count,
+        order_money_today: centsToMoney(stats.today.paid_cents),
+        order_money_lastday: centsToMoney(stats.yesterday.paid_cents),
       }));
     } catch (error) {
       return v2Failure(c, database, error);

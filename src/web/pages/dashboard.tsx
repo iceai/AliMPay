@@ -17,7 +17,7 @@ export function DashboardPage() {
   if (isLoading || !data) return <Loading label="正在汇总订单" />;
   const metrics = [
     { label: "今日订单", value: String(data.today_order_count), note: `${data.today_paid_count} 笔已支付`, icon: ShoppingCart },
-    { label: "今日实收", value: formatMoney(data.today_paid_cents), note: "按商户原始金额统计", icon: CircleDollarSign },
+    { label: "今日实收", value: formatMoney(data.today_paid_cents), note: `手续费收入 ${formatMoney(data.today_fee_cents)} · ${data.merchant_count} 个商户`, icon: CircleDollarSign },
     { label: "正在监控", value: String(data.active_monitors), note: "10 分钟内自动匹配", icon: Clock3 },
     { label: "通知失败", value: String(data.notify_failed_count), note: "自动尝试最多 10 次", icon: Send },
   ];
@@ -74,10 +74,11 @@ export function DashboardPage() {
             ) : (
               <div className="overflow-x-auto scrollbar-thin">
                 <table className="w-full min-w-[680px] text-left text-sm">
-                  <thead className="border-b text-xs text-muted"><tr><th className="pb-3 font-medium">商户订单号</th><th className="pb-3 font-medium">商品</th><th className="pb-3 font-medium">金额</th><th className="pb-3 font-medium">状态</th><th className="pb-3 text-right font-medium">创建时间</th></tr></thead>
+                  <thead className="border-b text-xs text-muted"><tr><th className="pb-3 font-medium">商户</th><th className="pb-3 font-medium">商户订单号</th><th className="pb-3 font-medium">商品</th><th className="pb-3 font-medium">金额</th><th className="pb-3 font-medium">状态</th><th className="pb-3 text-right font-medium">创建时间</th></tr></thead>
                   <tbody className="divide-y">
                     {data.recent_orders.map((order) => (
                       <tr key={order.id}>
+                        <td className="max-w-32 truncate py-3">{order.merchant_name || order.pid}</td>
                         <td className="py-3 font-mono text-xs"><Link className="hover:text-primary" to={`/orders/${order.id}`}>{order.out_trade_no}</Link></td>
                         <td className="max-w-48 truncate py-3">{order.name}</td>
                         <td className="py-3 font-mono">{formatMoney(order.requested_amount_cents)}</td>
