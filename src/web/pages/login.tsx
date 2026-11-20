@@ -1,7 +1,8 @@
 import { LogIn, WalletCards } from "lucide-react";
-import { type FormEvent, useState } from "react";
-import { Link, Navigate, useNavigate } from "react-router-dom";
-import useSWR, { mutate } from "swr";
+import { type FormEvent, useEffect, useState } from "react";
+import { Navigate, useNavigate } from "react-router-dom";
+import useSWR from "swr";
+import { primeSession } from "@/web/components/session-guard";
 import { apiFetch, jsonBody, swrFetcher } from "@/web/api";
 import { Button } from "@/web/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/web/components/ui/card";
@@ -15,6 +16,7 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  useEffect(() => { document.title = "AliMPay 管理后台"; }, []);
   if (isLoading) return <Loading />;
   if (!data?.setup_completed) return <Navigate to="/setup" replace />;
 
@@ -24,7 +26,7 @@ export function LoginPage() {
     setSubmitting(true);
     try {
       await apiFetch("/admin-api/login", { method: "POST", ...jsonBody({ username: "admin", password }) });
-      await mutate("/admin-api/me");
+      await primeSession("/admin-api/me");
       navigate("/dashboard", { replace: true });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "登录失败");
@@ -54,7 +56,6 @@ export function LoginPage() {
             </form>
           </CardContent>
         </Card>
-        <p className="mt-4 text-center text-xs text-muted"><Link className="hover:text-foreground" to="/merchant/login">商户登录入口</Link></p>
       </div>
     </main>
   );

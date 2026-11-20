@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import useSWR from "swr";
-import { ApiClientError, swrFetcher } from "@/web/api";
+import { swrFetcher } from "@/web/api";
+import { SessionGuard } from "@/web/components/session-guard";
 import { AppShell } from "@/web/components/app-shell";
 import { Loading } from "@/web/components/ui/loading";
 import { CheckoutPage } from "@/web/pages/checkout";
@@ -26,11 +27,7 @@ import { SetupPage } from "@/web/pages/setup";
 import { SystemPage } from "@/web/pages/system";
 
 function RequireAdmin({ children }: { children: ReactNode }) {
-  const { data, error, isLoading } = useSWR<{ user: { username: string } }>("/admin-api/me", swrFetcher, { shouldRetryOnError: false });
-  if (isLoading) return <Loading label="正在验证会话" />;
-  if (error instanceof ApiClientError && error.status === 401) return <Navigate to="/login" replace />;
-  if (error || !data) return <Navigate to="/login" replace />;
-  return children;
+  return <SessionGuard meKey="/admin-api/me" loginPath="/login" title="AliMPay 管理后台">{children}</SessionGuard>;
 }
 
 function Home() {

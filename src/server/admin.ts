@@ -15,13 +15,16 @@ import {
   assertOriginAllowed,
   authMiddleware,
   checkLoginRateLimit,
-  clearAuthCookies,
+  ADMIN_SESSION,
+  clearSessionCookies,
+  issueSession,
+  revokeOtherSessions,
+  revokeSession,
+  writeSessionCookies,
   clearLoginFailures,
   clientIp,
   createPasswordHash,
-  createSession,
   recordLoginFailure,
-  setAuthCookies,
   setupCompleted,
   verifyPassword,
   type AuthVariables,
@@ -73,7 +76,6 @@ import { sendTelegramMessage, telegramConfig } from "./telegram";
 import {
   generateRsaKeyPair,
   parseMoneyToCents,
-  sha256,
   validatePrivateKey,
   validatePublicKey,
   toPkcs8PrivateKey,
@@ -190,8 +192,7 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
       throw error;
     }
 
-    const session = createSession(database, userId, c.req.raw.headers);
-    setAuthCookies(c, session);
+    writeSessionCookies(c, ADMIN_SESSION, issueSession(database, ADMIN_SESSION, userId, c.req.raw.headers));
     return c.json({ ok: true, username: "admin" }, 201);
   });
 
@@ -213,9 +214,7 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
       throw new AppError(401, "INVALID_CREDENTIALS", "用户名或密码错误");
     }
     clearLoginFailures(rateKey);
-    database.query("DELETE FROM sessions WHERE user_id = ?").run(user.id);
-    const session = createSession(database, user.id, c.req.raw.headers);
-    setAuthCookies(c, session);
+    writeSessionCookies(c, ADMIN_SESSION, issueSession(database, ADMIN_SESSION, user.id, c.req.raw.headers));
     audit(database, "auth.login", { actor: user.username, ip: clientIp(c.req.raw.headers) });
     return c.json({ ok: true, username: user.username });
   });
@@ -225,9 +224,8 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
   app.get("/me", (c) => c.json({ user: c.get("admin"), csrf: Boolean(getCookie(c, CSRF_COOKIE)) }));
 
   app.post("/logout", (c) => {
-    const token = getCookie(c, SESSION_COOKIE);
-    if (token) database.query("DELETE FROM sessions WHERE token_hash = ?").run(sha256(token));
-    clearAuthCookies(c);
+    revokeSession(database, ADMIN_SESSION, getCookie(c, SESSION_COOKIE));
+    clearSessionCookies(c, ADMIN_SESSION);
     return c.json({ ok: true });
   });
 
@@ -523,6 +521,7 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     assert(await verifyPassword(body.current_password, row.password_hash), 401, "INVALID_PASSWORD", "当前密码错误");
     const hash = await createPasswordHash(body.new_password);
     database.query("UPDATE admin_users SET password_hash = ?, updated_at = ? WHERE id = ?").run(hash, new Date().toISOString(), admin.id);
+    revokeOtherSessions(database, ADMIN_SESSION, admin.id, getCookie(c, SESSION_COOKIE));
     audit(database, "auth.password_change", { actor: admin.username });
     return c.json({ ok: true });
   });

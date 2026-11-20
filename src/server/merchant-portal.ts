@@ -6,30 +6,32 @@ import {
   assertOriginAllowed,
   checkLoginRateLimit,
   clearLoginFailures,
+  clearSessionCookies,
   clientIp,
+  issueSession,
   recordLoginFailure,
+  revokeSession,
+  writeSessionCookies,
   verifyPassword,
 } from "./auth";
 import { audit, getSetting, type AppDatabase } from "./db";
 import { AppError, assert } from "./errors";
 import {
+  MERCHANT_SESSION,
   MERCHANT_SESSION_COOKIE,
-  clearMerchantCookies,
-  createMerchantSession,
   getMerchantById,
   getMerchantV1Key,
   merchantAuthMiddleware,
   merchantStats,
   regenerateMerchantV1Key,
   serializeMerchant,
-  setMerchantCookies,
   setMerchantV2PublicKey,
   updateMerchant,
   type MerchantRow,
   type MerchantVariables,
 } from "./merchants";
 import { getOrderById, listOrders } from "./orders";
-import { generateRsaKeyPair, sha256 } from "./security";
+import { generateRsaKeyPair } from "./security";
 import {
   WITHDRAWAL_STATUSES,
   cancelWithdrawal,
@@ -96,8 +98,7 @@ export function createMerchantPortalRoutes(database: AppDatabase) {
     }
     assert(merchant.status === "active", 403, "MERCHANT_DISABLED", "商户已被禁用，请联系平台管理员");
     clearLoginFailures(rateKey);
-    database.query("DELETE FROM merchant_sessions WHERE merchant_id = ?").run(merchant.id);
-    setMerchantCookies(c, createMerchantSession(database, merchant.id, c.req.raw.headers));
+    writeSessionCookies(c, MERCHANT_SESSION, issueSession(database, MERCHANT_SESSION, merchant.id, c.req.raw.headers));
     audit(database, "merchant.login", { actor: `merchant:${merchant.username}`, targetType: "merchant", targetId: merchant.id, ip: clientIp(c.req.raw.headers) });
     return c.json({ ok: true, name: merchant.name });
   });
@@ -107,9 +108,8 @@ export function createMerchantPortalRoutes(database: AppDatabase) {
   app.get("/me", (c) => c.json({ merchant: serializeMerchant(database, c.get("merchant")) }));
 
   app.post("/logout", (c) => {
-    const token = getCookie(c, MERCHANT_SESSION_COOKIE);
-    if (token) database.query("DELETE FROM merchant_sessions WHERE token_hash = ?").run(sha256(token));
-    clearMerchantCookies(c);
+    revokeSession(database, MERCHANT_SESSION, getCookie(c, MERCHANT_SESSION_COOKIE));
+    clearSessionCookies(c, MERCHANT_SESSION);
     return c.json({ ok: true });
   });
 
@@ -239,7 +239,7 @@ export function createMerchantPortalRoutes(database: AppDatabase) {
     assert(merchant.password_hash && await verifyPassword(body.current_password, merchant.password_hash), 401, "INVALID_PASSWORD", "当前密码错误");
     await updateMerchant(database, merchant.id, { password: body.new_password });
     // updateMerchant revokes every session; start a fresh one for this browser.
-    setMerchantCookies(c, createMerchantSession(database, merchant.id, c.req.raw.headers));
+    writeSessionCookies(c, MERCHANT_SESSION, issueSession(database, MERCHANT_SESSION, merchant.id, c.req.raw.headers));
     audit(database, "merchant.password_change", { actor: `merchant:${merchant.username}`, targetType: "merchant", targetId: merchant.id });
     return c.json({ ok: true });
   });

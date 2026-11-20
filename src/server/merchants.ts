@@ -1,7 +1,6 @@
 import type { MiddlewareHandler } from "hono";
-import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { MerchantStats, MerchantSummary } from "../shared/contracts";
-import { assertOriginAllowed, clientIp, createPasswordHash } from "./auth";
+import { authenticateSession, createPasswordHash, type SessionKind } from "./auth";
 import type { AppDatabase } from "./db";
 import { getRuntimeEnv } from "./env";
 import { AppError, assert } from "./errors";
@@ -10,9 +9,7 @@ import {
   encryptSecret,
   randomAlphaNumeric,
   randomMerchantPid,
-  randomToken,
   secureEqual,
-  sha256,
   toSpkiPublicKey,
   validatePublicKey,
 } from "./security";
@@ -298,57 +295,19 @@ export function setMerchantV2PublicKey(database: AppDatabase, id: string, public
 
 // ---------- Merchant portal sessions ----------
 
-export function createMerchantSession(database: AppDatabase, merchantId: string, headers: Headers) {
-  const token = randomToken(32);
-  const csrf = randomToken(24);
-  const now = new Date();
-  const expires = new Date(now.getTime() + 24 * 60 * 60_000);
-  database.query(`
-    INSERT INTO merchant_sessions(id, merchant_id, token_hash, expires_at, created_at, last_seen_at, ip, user_agent)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    crypto.randomUUID(), merchantId, sha256(token), expires.toISOString(), now.toISOString(), now.toISOString(),
-    clientIp(headers), (headers.get("user-agent") ?? "").slice(0, 512),
-  );
-  return { token, csrf, expires };
-}
-
-export function setMerchantCookies(c: Parameters<typeof setCookie>[0], session: ReturnType<typeof createMerchantSession>) {
-  const secure = getRuntimeEnv().nodeEnv === "production";
-  setCookie(c, MERCHANT_SESSION_COOKIE, session.token, { httpOnly: true, secure, sameSite: "Strict", path: "/", expires: session.expires });
-  setCookie(c, MERCHANT_CSRF_COOKIE, session.csrf, { httpOnly: false, secure, sameSite: "Strict", path: "/", expires: session.expires });
-}
-
-export function clearMerchantCookies(c: Parameters<typeof deleteCookie>[0]) {
-  deleteCookie(c, MERCHANT_SESSION_COOKIE, { path: "/" });
-  deleteCookie(c, MERCHANT_CSRF_COOKIE, { path: "/" });
-}
+export const MERCHANT_SESSION: SessionKind = {
+  table: "merchant_sessions",
+  ownerColumn: "merchant_id",
+  sessionCookie: MERCHANT_SESSION_COOKIE,
+  csrfCookie: MERCHANT_CSRF_COOKIE,
+  cookiePath: "/merchant-api",
+};
 
 export function merchantAuthMiddleware(database: AppDatabase): MiddlewareHandler<{ Variables: MerchantVariables }> {
   return async (c, next) => {
-    const token = getCookie(c, MERCHANT_SESSION_COOKIE) ?? "";
-    if (!token) throw new AppError(401, "AUTH_REQUIRED", "请先登录");
-    const now = new Date().toISOString();
-    database.query("DELETE FROM merchant_sessions WHERE expires_at <= ?").run(now);
-    const row = database.query(`
-      SELECT m.*, s.token_hash AS session_token_hash
-      FROM merchant_sessions s JOIN merchants m ON m.id = s.merchant_id
-      WHERE s.token_hash = ? AND s.expires_at > ?
-    `).get(sha256(token), now) as (MerchantRow & { session_token_hash: string }) | null;
-    if (!row) throw new AppError(401, "SESSION_EXPIRED", "登录已过期，请重新登录");
-    if (row.status !== "active") throw new AppError(403, "MERCHANT_DISABLED", "商户已被禁用");
-
-    if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
-      assertOriginAllowed(c.req.url, c.req.header("origin"), database);
-      const csrfHeader = c.req.header("x-csrf-token") ?? "";
-      const csrfCookie = getCookie(c, MERCHANT_CSRF_COOKIE) ?? "";
-      if (!csrfHeader || !csrfCookie || !secureEqual(csrfHeader, csrfCookie)) {
-        throw new AppError(403, "CSRF_REJECTED", "CSRF 校验失败，请刷新页面后重试");
-      }
-    }
-
-    database.query("UPDATE merchant_sessions SET last_seen_at = ? WHERE token_hash = ?").run(now, row.session_token_hash);
-    const { session_token_hash: _ignored, ...merchant } = row;
+    const merchant = getMerchantById(database, authenticateSession(c, database, MERCHANT_SESSION));
+    if (!merchant) throw new AppError(401, "SESSION_EXPIRED", "登录已过期，请重新登录");
+    if (merchant.status !== "active") throw new AppError(403, "MERCHANT_DISABLED", "商户已被禁用");
     c.set("merchant", merchant);
     await next();
   };

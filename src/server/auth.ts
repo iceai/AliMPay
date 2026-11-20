@@ -81,74 +81,121 @@ export async function verifyPassword(password: string, hash: string) {
   return Bun.password.verify(password, hash, "argon2id");
 }
 
-export function createSession(database: AppDatabase, userId: string, headers: Headers) {
+/** Idle timeout: a session lives this long after its last use. */
+export const SESSION_TTL_MS = 7 * 24 * 60 * 60_000;
+/** Extend a session (and rewrite its cookie) at most this often. */
+const SESSION_RENEW_INTERVAL_MS = 60 * 60_000;
+/** Concurrent sessions kept per account, so logging in on another device does not log this one out. */
+const MAX_SESSIONS_PER_ACCOUNT = 10;
+
+type CookieContext = Parameters<typeof setCookie>[0];
+
+/**
+ * Admin and merchant sessions share this logic but nothing else: separate tables, separate cookie
+ * names, and the session cookie is scoped to its own API path so neither is ever sent to the other API.
+ */
+export interface SessionKind {
+  table: "sessions" | "merchant_sessions";
+  ownerColumn: "user_id" | "merchant_id";
+  sessionCookie: string;
+  csrfCookie: string;
+  /** The httpOnly session cookie is only sent to this API prefix. */
+  cookiePath: string;
+}
+
+export const ADMIN_SESSION: SessionKind = {
+  table: "sessions",
+  ownerColumn: "user_id",
+  sessionCookie: SESSION_COOKIE,
+  csrfCookie: CSRF_COOKIE,
+  cookiePath: "/admin-api",
+};
+
+export function issueSession(database: AppDatabase, kind: SessionKind, ownerId: string, headers: Headers) {
   const token = randomToken(32);
   const csrf = randomToken(24);
   const now = new Date();
-  const expires = new Date(now.getTime() + 24 * 60 * 60_000);
+  const expires = new Date(now.getTime() + SESSION_TTL_MS);
+  database.query(`DELETE FROM ${kind.table} WHERE expires_at <= ?`).run(now.toISOString());
+  // Keep the newest sessions only; older devices stay logged in until the cap is reached.
   database.query(`
-    INSERT INTO sessions(id, user_id, token_hash, expires_at, created_at, last_seen_at, ip, user_agent)
+    DELETE FROM ${kind.table} WHERE ${kind.ownerColumn} = ? AND id NOT IN (
+      SELECT id FROM ${kind.table} WHERE ${kind.ownerColumn} = ? ORDER BY last_seen_at DESC LIMIT ?
+    )
+  `).run(ownerId, ownerId, MAX_SESSIONS_PER_ACCOUNT - 1);
+  database.query(`
+    INSERT INTO ${kind.table}(id, ${kind.ownerColumn}, token_hash, expires_at, created_at, last_seen_at, ip, user_agent)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    crypto.randomUUID(),
-    userId,
-    sha256(token),
-    expires.toISOString(),
-    now.toISOString(),
-    now.toISOString(),
-    clientIp(headers),
-    (headers.get("user-agent") ?? "").slice(0, 512),
+    crypto.randomUUID(), ownerId, sha256(token), expires.toISOString(), now.toISOString(), now.toISOString(),
+    clientIp(headers), (headers.get("user-agent") ?? "").slice(0, 512),
   );
   return { token, csrf, expires };
 }
 
-export function setAuthCookies(c: Parameters<typeof setCookie>[0], session: ReturnType<typeof createSession>) {
+export function writeSessionCookies(c: CookieContext, kind: SessionKind, session: { token: string; csrf: string; expires: Date }) {
   const secure = getRuntimeEnv().nodeEnv === "production";
-  setCookie(c, SESSION_COOKIE, session.token, {
-    httpOnly: true,
-    secure,
-    sameSite: "Strict",
-    path: "/",
-    expires: session.expires,
-  });
-  setCookie(c, CSRF_COOKIE, session.csrf, {
-    httpOnly: false,
-    secure,
-    sameSite: "Strict",
-    path: "/",
-    expires: session.expires,
-  });
+  setCookie(c, kind.sessionCookie, session.token, { httpOnly: true, secure, sameSite: "Strict", path: kind.cookiePath, expires: session.expires });
+  // The CSRF cookie must be readable by the page, so it stays on "/" (distinct name per kind).
+  setCookie(c, kind.csrfCookie, session.csrf, { httpOnly: false, secure, sameSite: "Strict", path: "/", expires: session.expires });
+  // Drop the pre-isolation session cookie that was scoped to "/".
+  if (kind.cookiePath !== "/") deleteCookie(c, kind.sessionCookie, { path: "/" });
 }
 
-export function clearAuthCookies(c: Parameters<typeof deleteCookie>[0]) {
-  deleteCookie(c, SESSION_COOKIE, { path: "/" });
-  deleteCookie(c, CSRF_COOKIE, { path: "/" });
+export function clearSessionCookies(c: CookieContext, kind: SessionKind) {
+  deleteCookie(c, kind.sessionCookie, { path: kind.cookiePath });
+  deleteCookie(c, kind.sessionCookie, { path: "/" });
+  deleteCookie(c, kind.csrfCookie, { path: "/" });
+}
+
+export function revokeSession(database: AppDatabase, kind: SessionKind, token: string | undefined) {
+  if (token) database.query(`DELETE FROM ${kind.table} WHERE token_hash = ?`).run(sha256(token));
+}
+
+/** Logs out every other device of this account, e.g. after a password change. */
+export function revokeOtherSessions(database: AppDatabase, kind: SessionKind, ownerId: string, keepToken: string | undefined) {
+  database.query(`DELETE FROM ${kind.table} WHERE ${kind.ownerColumn} = ? AND token_hash != ?`).run(ownerId, sha256(keepToken ?? ""));
+}
+
+/**
+ * Validates the session cookie, enforces CSRF + Origin on writes, and slides the expiry forward on use.
+ * Returns the owner id, or throws 401.
+ */
+export function authenticateSession(c: CookieContext, database: AppDatabase, kind: SessionKind) {
+  const token = getCookie(c, kind.sessionCookie) ?? "";
+  if (!token) throw new AppError(401, "AUTH_REQUIRED", "请先登录");
+  const nowMs = Date.now();
+  const now = new Date(nowMs).toISOString();
+  database.query(`DELETE FROM ${kind.table} WHERE expires_at <= ?`).run(now);
+  const row = database.query(`SELECT ${kind.ownerColumn} AS owner_id, expires_at FROM ${kind.table} WHERE token_hash = ? AND expires_at > ?`)
+    .get(sha256(token), now) as { owner_id: string; expires_at: string } | null;
+  if (!row) throw new AppError(401, "SESSION_EXPIRED", "登录已过期，请重新登录");
+
+  if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
+    assertOriginAllowed(c.req.url, c.req.header("origin"), database);
+    const csrfHeader = c.req.header("x-csrf-token") ?? "";
+    const csrfCookie = getCookie(c, kind.csrfCookie) ?? "";
+    if (!csrfHeader || !csrfCookie || !secureEqual(csrfHeader, csrfCookie)) {
+      throw new AppError(403, "CSRF_REJECTED", "CSRF 校验失败，请刷新页面后重试");
+    }
+  }
+
+  if (Date.parse(row.expires_at) - nowMs < SESSION_TTL_MS - SESSION_RENEW_INTERVAL_MS) {
+    const expires = new Date(nowMs + SESSION_TTL_MS);
+    database.query(`UPDATE ${kind.table} SET last_seen_at = ?, expires_at = ? WHERE token_hash = ?`).run(now, expires.toISOString(), sha256(token));
+    writeSessionCookies(c, kind, { token, csrf: getCookie(c, kind.csrfCookie) || randomToken(24), expires });
+  } else {
+    database.query(`UPDATE ${kind.table} SET last_seen_at = ? WHERE token_hash = ?`).run(now, sha256(token));
+  }
+  return row.owner_id;
 }
 
 export function authMiddleware(database: AppDatabase): MiddlewareHandler<{ Variables: AuthVariables }> {
   return async (c, next) => {
-    const token = getCookie(c, SESSION_COOKIE) ?? "";
-    if (!token) throw new AppError(401, "AUTH_REQUIRED", "请先登录");
-    const now = new Date().toISOString();
-    database.query("DELETE FROM sessions WHERE expires_at <= ?").run(now);
-    const row = database.query(`
-      SELECT u.id, u.username, u.created_at, s.token_hash
-      FROM sessions s JOIN admin_users u ON u.id = s.user_id
-      WHERE s.token_hash = ? AND s.expires_at > ?
-    `).get(sha256(token), now) as (AdminUser & { token_hash: string }) | null;
-    if (!row) throw new AppError(401, "SESSION_EXPIRED", "登录已过期，请重新登录");
-
-    if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
-      assertOriginAllowed(c.req.url, c.req.header("origin"), database);
-      const csrfHeader = c.req.header("x-csrf-token") ?? "";
-      const csrfCookie = getCookie(c, CSRF_COOKIE) ?? "";
-      if (!csrfHeader || !csrfCookie || !secureEqual(csrfHeader, csrfCookie)) {
-        throw new AppError(403, "CSRF_REJECTED", "CSRF 校验失败，请刷新页面后重试");
-      }
-    }
-
-    database.query("UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?").run(now, row.token_hash);
-    c.set("admin", { id: row.id, username: row.username, created_at: row.created_at });
+    const userId = authenticateSession(c, database, ADMIN_SESSION);
+    const user = database.query("SELECT id, username, created_at FROM admin_users WHERE id = ?").get(userId) as AdminUser | null;
+    if (!user) throw new AppError(401, "SESSION_EXPIRED", "登录已过期，请重新登录");
+    c.set("admin", user);
     await next();
   };
 }

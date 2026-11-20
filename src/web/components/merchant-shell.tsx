@@ -1,12 +1,12 @@
 import { Banknote, BookOpenText, LayoutDashboard, LogOut, Menu, ReceiptText, Store, UserCog } from "lucide-react";
 import { type ReactNode, useState } from "react";
-import { Navigate, NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import useSWR, { mutate } from "swr";
 import type { MerchantSummary } from "@/shared/contracts";
 import { apiFetch, swrFetcher } from "@/web/api";
 import { Button } from "@/web/components/ui/button";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/web/components/ui/dialog";
-import { Loading } from "@/web/components/ui/loading";
+import { SessionGuard } from "@/web/components/session-guard";
 import { cn } from "@/web/lib/utils";
 
 const navigation = [
@@ -22,10 +22,7 @@ export function useMerchantMe() {
 }
 
 export function RequireMerchant({ children }: { children: ReactNode }) {
-  const { data, error, isLoading } = useMerchantMe();
-  if (isLoading) return <Loading label="正在验证会话" />;
-  if (error || !data) return <Navigate to="/merchant/login" replace />;
-  return children;
+  return <SessionGuard meKey="/merchant-api/me" loginPath="/merchant/login" title="AliMPay 商户后台">{children}</SessionGuard>;
 }
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {

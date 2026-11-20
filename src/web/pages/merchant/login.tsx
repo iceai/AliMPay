@@ -1,7 +1,7 @@
 import { LogIn, Store } from "lucide-react";
-import { type FormEvent, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { mutate } from "swr";
+import { type FormEvent, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { primeSession } from "@/web/components/session-guard";
 import { apiFetch, jsonBody } from "@/web/api";
 import { Button } from "@/web/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/web/components/ui/card";
@@ -14,6 +14,7 @@ export function MerchantLoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  useEffect(() => { document.title = "AliMPay 商户后台"; }, []);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -21,7 +22,7 @@ export function MerchantLoginPage() {
     setSubmitting(true);
     try {
       await apiFetch("/merchant-api/login", { method: "POST", ...jsonBody({ username: username.trim(), password }) });
-      await mutate("/merchant-api/me");
+      await primeSession("/merchant-api/me");
       navigate("/merchant/dashboard", { replace: true });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "登录失败");
@@ -51,7 +52,6 @@ export function MerchantLoginPage() {
             </form>
           </CardContent>
         </Card>
-        <p className="mt-4 text-center text-xs text-muted"><Link className="hover:text-foreground" to="/login">平台管理员登录</Link></p>
       </div>
     </main>
   );
