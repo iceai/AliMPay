@@ -80,7 +80,7 @@ export function OrdersPage() {
                       <td className="py-3 font-mono">{formatMoney(order.requested_amount_cents)}</td>
                       <td className="py-3 font-mono">{formatMoney(order.payable_amount_cents)}</td>
                       <td className="py-3 font-mono text-muted">{formatMoney(order.fee_cents)}</td>
-                      <td className="py-3"><StatusBadge status={order.status} /></td>
+                      <td className="py-3"><StatusBadge status={order.status} blocked={Boolean(order.blocked_at)} /></td>
                       <td className="py-3 text-right text-xs text-muted">{formatDate(order.created_at)}</td>
                     </tr>
                   ))}

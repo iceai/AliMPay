@@ -12,6 +12,8 @@ import { AppError } from "./errors";
 import { isGatewayReady } from "./config";
 import { NotificationWorker } from "./notifications";
 import { buildSignedReturnUrl } from "./notifications";
+import { clientIp } from "./auth";
+import { enforceOrderBlock } from "./blacklist";
 import { waitForOrder } from "./order-events";
 import { getCheckoutData, getOrderByCheckoutToken, isNotifyDelivered } from "./orders";
 import { TelegramAlertWorker } from "./telegram";
@@ -93,6 +95,9 @@ export function createApp(services?: Partial<AppServices>) {
     c.header("cache-control", "no-store");
     const initial = getOrderByCheckoutToken(database, c.req.param("token"));
     if (!initial) throw new AppError(404, "CHECKOUT_NOT_FOUND", "支付订单不存在");
+    if (enforceOrderBlock(database, initial, clientIp(c.req.raw.headers))) {
+      return c.json(getCheckoutData(database, c.req.param("token")));
+    }
     await scanner.ensureFresh(initial).catch(() => undefined);
     const order = getOrderByCheckoutToken(database, c.req.param("token"));
     if (!order) throw new AppError(404, "CHECKOUT_NOT_FOUND", "支付订单不存在");
@@ -107,6 +112,7 @@ export function createApp(services?: Partial<AppServices>) {
     const token = c.req.param("token");
     const initial = getOrderByCheckoutToken(database, token);
     if (!initial) throw new AppError(404, "CHECKOUT_NOT_FOUND", "支付订单不存在");
+    if (enforceOrderBlock(database, initial, clientIp(c.req.raw.headers))) return c.json(getCheckoutData(database, token));
     const since = c.req.query("since") ?? "pending";
     const state = () => {
       const current = getOrderByCheckoutToken(database, token);

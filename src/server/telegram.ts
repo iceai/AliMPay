@@ -56,6 +56,7 @@ export function buildAlertMessage(database: AppDatabase, alert: Pick<AlertRow, "
       `时间：${formatApiDate(event.occurred_at)}`,
     ];
     if (event.other_account) lines.push(`付款方：${event.other_account}`);
+    if (event.blacklist_id) lines.push("⛔ 付款方在黑名单中，已拦截，不会确认任何订单");
     if (event.trans_memo) lines.push(`备注：${event.trans_memo}`);
     const suggestions = suggestOrdersForPayment(database, event, 3);
     if (suggestions.length) {

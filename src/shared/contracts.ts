@@ -33,6 +33,8 @@ export interface OrderRecord {
   buyer: string;
   fee_rate_bp: number;
   fee_cents: number;
+  /** Set when the buyer was blacklisted; such an order can never be marked paid. */
+  blocked_at: string | null;
   merchant_name?: string;
 }
 
@@ -101,6 +103,22 @@ export interface CheckoutData {
   return_target: string | null;
   /** The merchant acknowledged the async notification, so its order page already reflects the payment. */
   notify_delivered: boolean;
+  /** The buyer is blacklisted: no payment details are returned. */
+  blocked: boolean;
+}
+
+export type BlacklistKind = "ip" | "alipay_account";
+
+export interface BlacklistEntry {
+  id: string;
+  kind: BlacklistKind;
+  /** IP or CIDR for "ip"; the account exactly as Alipay bills show it for "alipay_account". */
+  value: string;
+  note: string;
+  hits: number;
+  last_hit_at: string | null;
+  created_by: string;
+  created_at: string;
 }
 
 export interface ApiErrorBody {

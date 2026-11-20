@@ -245,3 +245,50 @@ test("admin and merchant areas are isolated and merchants never see the admin lo
   await merchant.goto("/merchant/orders");
   await expect(merchant.getByRole("heading", { name: "订单" })).toBeVisible();
 });
+
+test("admin blacklists a buyer IP and that buyer can no longer pay", async ({ browser }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium");
+  const admin = await (await browser.newContext()).newPage();
+  await admin.goto("/admin/login");
+  await admin.getByLabel("用户名").fill("e2e-admin");
+  await admin.getByLabel("密码").fill("Test-password-2026");
+  await admin.getByRole("button", { name: /^登录/ }).click();
+  await expect(admin).toHaveURL(/\/admin\/dashboard$/);
+  await admin.goto("/admin/settings");
+  await admin.getByRole("button", { name: /经营码/ }).first().click();
+  await admin.getByRole("button", { name: /保存全部配置/ }).click();
+  await expect(admin.getByText("配置已保存")).toBeVisible();
+
+  const csrf = (await admin.context().cookies()).find((c) => c.name === "alimpay_csrf")!.value;
+  const merchants = await (await admin.request.get("/admin-api/merchants")).json() as { data: Array<{ id: string; name: string }> };
+  const shop = merchants.data.find((m) => m.name === "E2E Shop")!;
+  const creds = await (await admin.request.post(`/admin-api/merchants/${shop.id}/keys/v1/reveal`, { headers: { "x-csrf-token": csrf, origin: "http://127.0.0.1:3100" } })).json() as { pid: string; key: string };
+  const order = (no: string, ip: string) => {
+    const unsigned = { pid: creds.pid, type: "alipay", out_trade_no: no, notify_url: "https://8.8.8.8/notify", return_url: "https://8.8.8.8/return", name: "BL test", money: "2.34", clientip: ip, sign_type: "MD5" };
+    return { ...unsigned, sign: md5(unsigned, creds.key) };
+  };
+  const first = await (await admin.request.post("/mapi.php", { form: order(`BL-${Date.now()}`, "198.51.100.23") })).json() as { code: number; payurl: string };
+  expect(first.code).toBe(1);
+
+  const buyer = await (await browser.newContext()).newPage();
+  await buyer.goto(first.payurl);
+  await expect(buyer.getByAltText("支付宝经营码")).toBeVisible();
+
+  await admin.getByRole("link", { name: "黑名单" }).click();
+  await admin.getByLabel("IP 或网段").fill("198.51.100.23");
+  await admin.getByLabel("备注（可选）").fill("恶意投诉");
+  await admin.getByRole("button", { name: "拉黑" }).click();
+  await expect(admin.getByRole("cell", { name: "198.51.100.23" })).toBeVisible();
+
+  await buyer.reload();
+  await expect(buyer.getByRole("heading", { name: "无法完成支付" })).toBeVisible();
+  await expect(buyer.getByAltText("支付宝经营码")).toHaveCount(0);
+
+  const second = await (await admin.request.post("/mapi.php", { form: order(`BL2-${Date.now()}`, "198.51.100.23") })).json() as { code: number; msg: string };
+  expect(second).toEqual({ code: -1, msg: "当前无法为您提供支付服务，请联系商家" });
+
+  await admin.reload();
+  await expect(admin.getByRole("row", { name: /198\.51\.100\.23/ }).getByRole("cell").nth(3)).toHaveText("2");
+  await admin.goto("/admin/orders");
+  await expect(admin.getByText("黑名单已拦截").first()).toBeVisible();
+});

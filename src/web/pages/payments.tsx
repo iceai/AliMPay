@@ -1,4 +1,4 @@
-import { EyeOff, Link2, RotateCcw } from "lucide-react";
+import { Ban, EyeOff, Link2, RotateCcw } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import useSWR from "swr";
@@ -13,6 +13,7 @@ import { Card, CardContent } from "@/web/components/ui/card";
 import { Input } from "@/web/components/ui/input";
 import { Loading } from "@/web/components/ui/loading";
 import { cn, formatDate, formatMoney } from "@/web/lib/utils";
+import { blacklistFrom } from "@/web/pages/blacklist";
 
 export interface UnmatchedPayment {
   id: number;
@@ -22,6 +23,7 @@ export interface UnmatchedPayment {
   alipay_order_no: string | null;
   trans_memo: string | null;
   other_account: string | null;
+  blacklist_id: string | null;
   ignored_at: string | null;
   suggestions: Array<OrderRecord & { amount_exact: boolean }>;
 }
@@ -70,9 +72,15 @@ function PaymentCard({ payment, ignoredView, refresh }: { payment: UnmatchedPaym
           <div>
             <div className="font-mono text-2xl font-semibold tracking-tight">{formatMoney(payment.amount_cents)}</div>
             <div className="mt-1 text-sm text-muted">{formatDate(payment.occurred_at)}{payment.other_account ? ` · ${payment.other_account}` : ""}</div>
+            {payment.blacklist_id ? <Badge variant="danger" className="mt-2">黑名单付款人 · 已拦截，未确认任何订单</Badge> : null}
             {payment.trans_memo ? <div className="mt-1 text-sm">备注：{payment.trans_memo}</div> : null}
           </div>
-          <Button variant="ghost" size="sm" onClick={toggleIgnore}>{ignoredView ? <><RotateCcw />恢复</> : <><EyeOff />忽略（与订单无关）</>}</Button>
+          <div className="flex flex-wrap gap-1">
+            {payment.other_account && !payment.blacklist_id ? <Button variant="ghost" size="sm" onClick={async () => {
+              if (await blacklistFrom(`/admin-api/payments/${payment.id}/blacklist`, `拉黑付款人 ${payment.other_account}`)) await refresh();
+            }}><Ban />拉黑付款人</Button> : null}
+            <Button variant="ghost" size="sm" onClick={toggleIgnore}>{ignoredView ? <><RotateCcw />恢复</> : <><EyeOff />忽略（与订单无关）</>}</Button>
+          </div>
         </div>
 
         <div className="mt-4 space-y-2">

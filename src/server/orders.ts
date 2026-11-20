@@ -5,6 +5,7 @@ import { centsToMoney, parseMoneyToCents, randomDigits, randomToken, validateCal
 import { getRuntimeEnv } from "./env";
 import { getPaymentPollIntervalSeconds, getSecret } from "./config";
 import { calculateFee, getMerchantByPid } from "./merchants";
+import { matchBlockedAccount } from "./blacklist";
 import { emitOrderEvent } from "./order-events";
 
 export interface CreateOrderInput {
@@ -180,7 +181,7 @@ export function getActiveOrders(database: AppDatabase, now = new Date().toISOStr
   expireOrders(database, now);
   return database.query(`
     SELECT * FROM orders
-    WHERE status IN ('pending', 'expired') AND monitor_until > ?
+    WHERE status IN ('pending', 'expired') AND monitor_until > ? AND blocked_at IS NULL
     ORDER BY created_at ASC
   `).all(now) as OrderRecord[];
 }
@@ -241,7 +242,9 @@ export function recordAndMatchPayment(database: AppDatabase, event: AccountLogEv
     }
 
     let matchedOrder: OrderRecord | undefined;
-    if (event.direction === "收入") {
+    // A blacklisted payer's money never confirms an order (theirs or anyone else's).
+    const blockedPayer = event.direction === "收入" ? matchBlockedAccount(database, event.otherAccount) : null;
+    if (event.direction === "收入" && !blockedPayer) {
       matchedOrder = candidates.find((order) => {
         const occurred = Date.parse(event.occurredAt);
         const withinWindow = occurred >= Date.parse(order.created_at) - 60_000 && occurred <= Date.parse(order.monitor_until);
@@ -254,12 +257,12 @@ export function recordAndMatchPayment(database: AppDatabase, event: AccountLogEv
     const inserted = database.query(`
       INSERT INTO payment_events(
         account_log_id, matched_order_id, occurred_at, received_at, direction,
-        amount_cents, alipay_order_no, trans_memo, other_account, raw_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+        amount_cents, alipay_order_no, trans_memo, other_account, raw_json, blacklist_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
     `).get(
       event.accountLogId, matchedOrder?.id ?? null, event.occurredAt, receivedAt, event.direction,
       event.amountCents, event.alipayOrderNo || null, event.transMemo || null,
-      event.otherAccount || null, JSON.stringify(event.raw),
+      event.otherAccount || null, JSON.stringify(event.raw), blockedPayer?.id ?? null,
     ) as { id: number };
 
     if (matchedOrder) {
@@ -296,7 +299,7 @@ export function getLateWatchOrders(database: AppDatabase, now = Date.now()) {
   expireOrders(database, new Date(now).toISOString());
   return database.query(`
     SELECT * FROM orders
-    WHERE status IN ('pending', 'expired') AND created_at > ?
+    WHERE status IN ('pending', 'expired') AND created_at > ? AND blocked_at IS NULL
     ORDER BY created_at ASC
   `).all(new Date(now - LATE_WATCH_MS).toISOString()) as OrderRecord[];
 }
@@ -313,9 +316,10 @@ export interface PaymentEventRecord {
   trans_memo: string | null;
   other_account: string | null;
   ignored_at: string | null;
+  blacklist_id: string | null;
 }
 
-const EVENT_COLUMNS = "id, account_log_id, matched_order_id, occurred_at, received_at, direction, amount_cents, alipay_order_no, trans_memo, other_account, ignored_at";
+const EVENT_COLUMNS = "id, account_log_id, matched_order_id, occurred_at, received_at, direction, amount_cents, alipay_order_no, trans_memo, other_account, ignored_at, blacklist_id";
 
 export function getPaymentEvent(database: AppDatabase, id: number) {
   return database.query(`SELECT ${EVENT_COLUMNS} FROM payment_events WHERE id = ?`).get(id) as PaymentEventRecord | null;
@@ -342,7 +346,7 @@ export function suggestOrdersForPayment(database: AppDatabase, event: Pick<Payme
   const occurred = Date.parse(event.occurred_at);
   const orders = database.query(`
     SELECT * FROM orders
-    WHERE status IN ('pending', 'expired') AND created_at >= ? AND created_at <= ?
+    WHERE status IN ('pending', 'expired') AND blocked_at IS NULL AND created_at >= ? AND created_at <= ?
   `).all(new Date(occurred - 24 * 60 * 60_000).toISOString(), new Date(occurred + 60_000).toISOString()) as OrderRecord[];
   const memo = event.trans_memo?.trim() ?? "";
   const score = (order: OrderRecord) => {
@@ -364,7 +368,7 @@ export function suggestOrdersForPayment(database: AppDatabase, event: Pick<Payme
 
 /** Unmatched incoming payments that may belong to an unpaid order. */
 export function candidatePaymentsForOrder(database: AppDatabase, order: OrderRecord) {
-  if (order.status !== "pending" && order.status !== "expired") return [];
+  if ((order.status !== "pending" && order.status !== "expired") || order.blocked_at) return [];
   const created = Date.parse(order.created_at);
   const events = database.query(`
     SELECT ${EVENT_COLUMNS} FROM payment_events
@@ -397,6 +401,7 @@ export function linkPaymentToOrder(database: AppDatabase, eventId: number, order
     const order = getOrderById(database, orderId);
     assert(order, 404, "ORDER_NOT_FOUND", "订单不存在");
     assert(order.status === "pending" || order.status === "expired", 409, "ORDER_ALREADY_PAID", "订单已经是支付成功状态");
+    assert(!order.blocked_at, 409, "ORDER_BLOCKED", "该订单的买家在黑名单中，订单已被拦截，不能关联收款");
 
     const status: OrderStatus = Date.parse(event.occurred_at) <= Date.parse(order.expires_at) ? "paid" : "late_paid";
     database.query(`
@@ -514,7 +519,9 @@ export function getCheckoutData(database: AppDatabase, token: string, signedRetu
   expireOrders(database);
   const order = database.query("SELECT * FROM orders WHERE checkout_token = ?").get(token) as OrderRecord | null;
   if (!order) return null;
-  const businessQrUrl = getSetting(database, "business_qr_url", "");
+  const blocked = Boolean(order.blocked_at) && order.status !== "paid" && order.status !== "late_paid";
+  // A blocked buyer gets no way to pay: no QR code, no transfer link.
+  const businessQrUrl = blocked ? "" : getSetting(database, "business_qr_url", "");
   const transferUserId = getSetting(database, "transfer_user_id", "");
   const transferLinkLayer = getSetting<TransferLinkLayer>(database, "transfer_link_layer", 2);
   return {
@@ -529,11 +536,12 @@ export function getCheckoutData(database: AppDatabase, token: string, signedRetu
     expires_at: order.expires_at,
     monitor_until: order.monitor_until,
     payment_poll_interval_seconds: getPaymentPollIntervalSeconds(database),
-    payment_uri: order.collection_mode === "transfer" ? createTransferUri(order, transferUserId, transferLinkLayer) : "",
+    payment_uri: order.collection_mode === "transfer" && !blocked ? createTransferUri(order, transferUserId, transferLinkLayer) : "",
     business_qr_url: businessQrUrl,
     return_url: order.return_url,
     return_target: signedReturnUrl ?? null,
     notify_delivered: isNotifyDelivered(database, order.id),
+    blocked,
   };
 }
 

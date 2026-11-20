@@ -8,7 +8,8 @@ const labels: Record<OrderStatus, string> = {
   late_paid: "迟到支付",
 };
 
-export function StatusBadge({ status }: { status: OrderStatus }) {
+export function StatusBadge({ status, blocked = false }: { status: OrderStatus; blocked?: boolean }) {
+  if (blocked && status !== "paid" && status !== "late_paid") return <Badge variant="danger">黑名单已拦截</Badge>;
   const variant = status === "paid" ? "success" : status === "late_paid" ? "primary" : status === "expired" ? "danger" : "outline";
   return <Badge variant={variant}>{labels[status]}</Badge>;
 }

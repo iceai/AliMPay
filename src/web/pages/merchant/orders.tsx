@@ -35,6 +35,7 @@ export interface MerchantOrder {
   created_at: string;
   expires_at: string;
   paid_at: string | null;
+  blocked_at: string | null;
 }
 
 function OrdersTable({ orders }: { orders: MerchantOrder[] }) {
@@ -53,7 +54,7 @@ function OrdersTable({ orders }: { orders: MerchantOrder[] }) {
               <td className="py-3 font-mono">{formatMoney(order.requested_amount_cents)}</td>
               <td className="py-3 font-mono text-muted">{formatMoney(order.fee_cents)}</td>
               <td className="py-3 font-mono">{formatMoney(order.requested_amount_cents - order.fee_cents)}</td>
-              <td className="py-3"><StatusBadge status={order.status} /></td>
+              <td className="py-3"><StatusBadge status={order.status} blocked={Boolean(order.blocked_at)} /></td>
               <td className="py-3 text-right text-xs text-muted">{formatDate(order.created_at)}</td>
             </tr>
           ))}
@@ -159,7 +160,7 @@ export function MerchantOrderDetailPage() {
   return (
     <>
       <Button asChild variant="ghost" size="sm" className="mb-3 -ml-2"><Link to="/merchant/orders"><ArrowLeft />订单列表</Link></Button>
-      <PageHeader title={order.name} description={`商户订单号 ${order.out_trade_no}`} actions={<StatusBadge status={order.status} />} />
+      <PageHeader title={order.name} description={`商户订单号 ${order.out_trade_no}`} actions={<StatusBadge status={order.status} blocked={Boolean(order.blocked_at)} />} />
       <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
         <Card className="min-w-0">
           <CardHeader><CardTitle>订单信息</CardTitle></CardHeader>

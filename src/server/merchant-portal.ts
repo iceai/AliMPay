@@ -72,6 +72,7 @@ function merchantOrderView(order: NonNullable<ReturnType<typeof getOrderById>>) 
     created_at: order.created_at,
     expires_at: order.expires_at,
     paid_at: order.paid_at,
+    blocked_at: order.blocked_at,
   };
 }
 

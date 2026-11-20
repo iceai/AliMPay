@@ -1,5 +1,6 @@
 import {
   Activity,
+  Ban,
   Banknote,
   BookOpenText,
   CircleAlert,
@@ -27,6 +28,7 @@ const navigation = [
   { to: "/admin/payments", label: "未匹配收款", icon: CircleAlert },
   { to: "/admin/merchants", label: "商户管理", icon: Store },
   { to: "/admin/withdrawals", label: "提现管理", icon: Banknote },
+  { to: "/admin/blacklist", label: "黑名单", icon: Ban },
   { to: "/admin/settings", label: "收款配置", icon: Settings2 },
   { to: "/admin/keys", label: "密钥中心", icon: KeyRound },
   { to: "/admin/docs", label: "API 文档", icon: BookOpenText },

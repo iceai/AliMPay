@@ -28,7 +28,8 @@ const loginBuckets = new Map<string, LoginBucket>();
 
 export function clientIp(headers: Headers) {
   if (getRuntimeEnv().trustProxy) {
-    return (headers.get("x-forwarded-for")?.split(",")[0] ?? headers.get("x-real-ip") ?? "").trim().slice(0, 128);
+    // Cloudflare overwrites CF-Connecting-IP; the first X-Forwarded-For entry can be supplied by the client.
+    return (headers.get("cf-connecting-ip") ?? headers.get("x-forwarded-for")?.split(",")[0] ?? headers.get("x-real-ip") ?? "").trim().slice(0, 128);
   }
   return "";
 }

@@ -2,6 +2,8 @@ import { Hono, type Context } from "hono";
 import type { OrderRecord, TransferLinkLayer } from "../shared/contracts";
 import type { PaymentScanner } from "./alipay";
 import { getSetting, type AppDatabase } from "./db";
+import { assertPayerAllowed } from "./blacklist";
+import { clientIp } from "./auth";
 import { AppError, assert } from "./errors";
 import { formatFeeRate, getMerchantV1Key, merchantStats, requireActiveMerchant } from "./merchants";
 import {
@@ -101,8 +103,13 @@ function requireOrderFields(parameters: Parameters, allowMissingReturn: boolean)
   assert(parameters.money, 400, "MISSING_MONEY", "money 不能为空");
 }
 
-function createFromParameters(database: AppDatabase, parameters: Parameters, apiVersion: "v1" | "v2", allowMissingReturn: boolean) {
+/**
+ * `browserIp` is the requester's own address for page-jump endpoints (the buyer's browser posts there);
+ * server-to-server endpoints only have the merchant-supplied clientip.
+ */
+function createFromParameters(database: AppDatabase, parameters: Parameters, apiVersion: "v1" | "v2", allowMissingReturn: boolean, browserIp = "") {
   requireOrderFields(parameters, allowMissingReturn);
+  assertPayerAllowed(database, [parameters.clientip, browserIp]);
   return createOrder(database, {
     pid: parameters.pid!,
     apiVersion,
@@ -136,7 +143,7 @@ export function createEasyPayRoutes(database: AppDatabase, scanner: PaymentScann
     try {
       const parameters = await requestParameters(c);
       verifyV1(database, parameters);
-      const { order } = createFromParameters(database, parameters, "v1", false);
+      const { order } = createFromParameters(database, parameters, "v1", false, clientIp(c.req.raw.headers));
       return c.redirect(checkoutUrl(database, order), 302);
     } catch (error) {
       return v1Failure(c, error);
@@ -209,7 +216,7 @@ export function createEasyPayRoutes(database: AppDatabase, scanner: PaymentScann
     try {
       const parameters = await requestParameters(c);
       verifyV2(database, parameters);
-      const { order } = createFromParameters(database, parameters, "v2", true);
+      const { order } = createFromParameters(database, parameters, "v2", true, clientIp(c.req.raw.headers));
       return c.redirect(checkoutUrl(database, order), 302);
     } catch (error) {
       return v2Failure(c, database, error);

@@ -19,6 +19,7 @@ import { MerchantDetailPage } from "@/web/pages/merchant-detail";
 import { MerchantsPage } from "@/web/pages/merchants";
 import { MerchantWithdrawalsPage } from "@/web/pages/merchant/withdrawals";
 import { WithdrawalsPage } from "@/web/pages/withdrawals";
+import { BlacklistPage } from "@/web/pages/blacklist";
 import { OrderDetailPage } from "@/web/pages/order-detail";
 import { OrdersPage } from "@/web/pages/orders";
 import { PaymentsPage } from "@/web/pages/payments";
@@ -69,6 +70,7 @@ export function App() {
         <Route path="/admin/merchants" element={<MerchantsPage />} />
         <Route path="/admin/merchants/:id" element={<MerchantDetailPage />} />
         <Route path="/admin/withdrawals" element={<WithdrawalsPage />} />
+        <Route path="/admin/blacklist" element={<BlacklistPage />} />
         <Route path="/admin/settings" element={<SettingsPage />} />
         <Route path="/admin/keys" element={<KeyCenterPage />} />
         <Route path="/admin/docs" element={<DocsPage />} />

@@ -216,6 +216,20 @@ CREATE INDEX IF NOT EXISTS idx_withdrawals_merchant ON withdrawals(merchant_id, 
 CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status, created_at DESC);
 `;
 
+const BLACKLIST_MIGRATION = `
+CREATE TABLE IF NOT EXISTS blacklist (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK(kind IN ('ip', 'alipay_account')),
+  value TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  hits INTEGER NOT NULL DEFAULT 0,
+  last_hit_at TEXT,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE(kind, value)
+);
+`;
+
 const DEFAULT_SETTINGS: Record<string, unknown> = {
   setup_completed: false,
   public_base_url: "",
@@ -306,6 +320,21 @@ export function createDatabase(path = getRuntimeEnv().databasePath): AppDatabase
     try {
       database.exec(WITHDRAWALS_MIGRATION);
       database.query("INSERT INTO schema_migrations(version, applied_at) VALUES (5, ?)").run(now);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  if (!database.query("SELECT 1 FROM schema_migrations WHERE version = 6").get()) {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      database.exec(BLACKLIST_MIGRATION);
+      // Set when a blacklisted buyer is detected; the order is then never matched to a payment.
+      database.exec("ALTER TABLE orders ADD COLUMN blocked_at TEXT");
+      // The blacklist entry that stopped this payment from confirming any order.
+      database.exec("ALTER TABLE payment_events ADD COLUMN blacklist_id TEXT");
+      database.query("INSERT INTO schema_migrations(version, applied_at) VALUES (6, ?)").run(now);
       database.exec("COMMIT");
     } catch (error) {
       database.exec("ROLLBACK");

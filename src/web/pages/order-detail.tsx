@@ -1,4 +1,4 @@
-import { ArrowLeft, Link2, RefreshCw, Send } from "lucide-react";
+import { ArrowLeft, Ban, Link2, RefreshCw, Send } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import useSWR from "swr";
 import { toast } from "sonner";
@@ -12,6 +12,7 @@ import { Button } from "@/web/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/web/components/ui/card";
 import { Loading } from "@/web/components/ui/loading";
 import { formatDate, formatMoney } from "@/web/lib/utils";
+import { blacklistFrom } from "@/web/pages/blacklist";
 import { linkPayment } from "@/web/pages/payments";
 
 interface CandidatePayment {
@@ -50,6 +51,10 @@ export function OrderDetailPage() {
         description={`商户订单号 ${order.out_trade_no}`}
         actions={
           <>
+            <Button variant="outline" onClick={async () => {
+              const targets = [order.client_ip && `IP ${order.client_ip}`, order.buyer && `付款账号 ${order.buyer}`].filter(Boolean).join("、");
+              if (await blacklistFrom(`/admin-api/orders/${order.id}/blacklist`, `拉黑该订单的客户：${targets || "（无可用信息）"}`)) await mutate();
+            }}><Ban />拉黑客户</Button>
             <Button variant="outline" onClick={async () => { await apiFetch("/admin-api/scans/run", { method: "POST" }); toast.success("扫描已完成"); await mutate(); }}><RefreshCw />立即扫描</Button>
             <Button disabled={!paid} onClick={async () => { await apiFetch(`/admin-api/orders/${id}/resend`, { method: "POST" }); toast.success("已加入一次性补发队列"); await mutate(); }}><Send />补发通知</Button>
           </>
@@ -82,7 +87,7 @@ export function OrderDetailPage() {
       <div className="grid gap-4 sm:grid-cols-3">
         <Card><CardContent className="pt-5"><div className="text-sm text-muted">商户金额</div><div className="mt-2 text-2xl font-semibold">{formatMoney(order.requested_amount_cents)}</div></CardContent></Card>
         <Card><CardContent className="pt-5"><div className="text-sm text-muted">要求实付</div><div className="mt-2 text-2xl font-semibold text-primary">{formatMoney(order.payable_amount_cents)}</div></CardContent></Card>
-        <Card><CardContent className="pt-5"><div className="text-sm text-muted">订单状态</div><div className="mt-3"><StatusBadge status={order.status} /></div></CardContent></Card>
+        <Card><CardContent className="pt-5"><div className="text-sm text-muted">订单状态</div><div className="mt-3"><StatusBadge status={order.status} blocked={Boolean(order.blocked_at)} /></div></CardContent></Card>
       </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-2">

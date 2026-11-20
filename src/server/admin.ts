@@ -51,6 +51,7 @@ import {
   updateMerchant,
 } from "./merchants";
 import { notificationHistory, queueManualNotification } from "./notifications";
+import { addBlacklistEntry, blockRuleForAddress, enforceOrderBlock, listBlacklist, removeBlacklistEntry } from "./blacklist";
 import {
   WITHDRAWAL_STATUSES,
   getMerchantBalance,
@@ -66,6 +67,7 @@ import {
   candidatePaymentsForOrder,
   countUnmatchedPayments,
   getOrderById,
+  getPaymentEvent,
   ignoreAllUnmatchedPayments,
   linkPaymentToOrder,
   listOrders,
@@ -648,6 +650,51 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     setMerchantV2PublicKey(database, c.req.param("id"), publicKey);
     audit(database, "merchant.v2_import", { actor: c.get("admin").username, targetType: "merchant", targetId: c.req.param("id") });
     return c.json({ ok: true });
+  });
+
+  // ---------- Blacklist ----------
+
+  app.get("/blacklist", (c) => c.json({ data: listBlacklist(database) }));
+
+  app.post("/blacklist", async (c) => {
+    const body = await c.req.json<{ kind?: string; value?: string; note?: string }>().catch(() => ({} as Record<string, string>));
+    const { entry, created } = addBlacklistEntry(database, { kind: body.kind ?? "", value: body.value ?? "", note: body.note, createdBy: c.get("admin").username });
+    audit(database, "blacklist.add", { actor: c.get("admin").username, targetType: "blacklist", targetId: entry.id, ip: clientIp(c.req.raw.headers), details: { kind: entry.kind, value: entry.value } });
+    return c.json({ ok: true, entry, created }, created ? 201 : 200);
+  });
+
+  app.delete("/blacklist/:id", (c) => {
+    removeBlacklistEntry(database, c.req.param("id"));
+    audit(database, "blacklist.remove", { actor: c.get("admin").username, targetType: "blacklist", targetId: c.req.param("id") });
+    return c.json({ ok: true });
+  });
+
+  /** One click: block the order's buyer IP (IPv6 as /64) and, if known, the paying Alipay account. */
+  app.post("/orders/:id/blacklist", async (c) => {
+    const order = getOrderById(database, c.req.param("id"));
+    assert(order, 404, "ORDER_NOT_FOUND", "订单不存在");
+    const body = await c.req.json<{ note?: string }>().catch(() => ({} as { note?: string }));
+    const note = body.note?.trim() || `订单 ${order.out_trade_no}`;
+    const added = [];
+    const ipRule = blockRuleForAddress(order.client_ip);
+    if (ipRule) added.push(addBlacklistEntry(database, { kind: "ip", value: ipRule, note, createdBy: c.get("admin").username }).entry);
+    if (order.buyer) added.push(addBlacklistEntry(database, { kind: "alipay_account", value: order.buyer, note, createdBy: c.get("admin").username }).entry);
+    assert(added.length, 400, "NOTHING_TO_BLOCK", "该订单没有记录买家 IP 或付款账号，无法拉黑");
+    enforceOrderBlock(database, order, "");
+    audit(database, "blacklist.add_from_order", { actor: c.get("admin").username, targetType: "order", targetId: order.id, details: { values: added.map((entry) => entry.value) } });
+    return c.json({ ok: true, added });
+  });
+
+  /** One click: block the Alipay account that sent an (unmatched) payment. */
+  app.post("/payments/:id/blacklist", async (c) => {
+    const event = getPaymentEvent(database, Number(c.req.param("id")));
+    assert(event, 404, "PAYMENT_NOT_FOUND", "收款流水不存在");
+    assert(event.other_account, 400, "NOTHING_TO_BLOCK", "这笔收款没有付款方账号，无法拉黑");
+    const body = await c.req.json<{ note?: string }>().catch(() => ({} as { note?: string }));
+    const { entry } = addBlacklistEntry(database, { kind: "alipay_account", value: event.other_account, note: body.note?.trim() || `收款流水 ${event.account_log_id}`, createdBy: c.get("admin").username });
+    if (!event.matched_order_id) database.query("UPDATE payment_events SET blacklist_id = ? WHERE id = ?").run(entry.id, event.id);
+    audit(database, "blacklist.add_from_payment", { actor: c.get("admin").username, targetType: "payment_event", targetId: String(event.id), details: { value: entry.value } });
+    return c.json({ ok: true, added: [entry] });
   });
 
   // ---------- Withdrawals ----------

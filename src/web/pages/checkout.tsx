@@ -45,7 +45,7 @@ export function CheckoutPage() {
   const checkoutPath = `/public-api/checkout/${encodeURIComponent(token)}`;
   const { data, error, isLoading, mutate } = useSWR<CheckoutData>(checkoutPath, swrFetcher, {
     refreshInterval: (latest) => {
-      if (latest && (["paid", "late_paid"].includes(latest.status) || Date.parse(latest.monitor_until) <= Date.now())) return 0;
+      if (latest && (latest.blocked || ["paid", "late_paid"].includes(latest.status) || Date.parse(latest.monitor_until) <= Date.now())) return 0;
       return (latest?.payment_poll_interval_seconds ?? PAYMENT_POLL_INTERVAL_DEFAULT_SECONDS) * 1_000;
     },
     shouldRetryOnError: false,
@@ -74,7 +74,7 @@ export function CheckoutPage() {
         const current = latest.current;
         if (!current) { await sleep(300); continue; }
         const state = checkoutState(current);
-        if (state === "notified") return;
+        if (current.blocked || state === "notified") return;
         if (state === "paid" && !current.return_target) return;
         if (state === "pending" && Date.parse(current.monitor_until) <= Date.now()) return;
         try {
@@ -140,6 +140,13 @@ export function CheckoutPage() {
   if (error || !data) return <main className="flex min-h-screen items-center justify-center px-4"><div className="max-w-sm text-center"><TriangleAlert className="mx-auto size-9 text-destructive" /><h1 className="mt-4 text-xl font-semibold">订单不存在</h1><p className="mt-2 text-sm text-muted">链接可能无效，或订单信息无法读取。</p></div></main>;
 
   const paid = data.status === "paid" || data.status === "late_paid";
+  if (data.blocked) {
+    return (
+      <main className="flex min-h-screen items-center justify-center px-4 py-12">
+        <Card className="w-full max-w-md"><CardContent className="px-6 py-10 text-center"><TriangleAlert className="mx-auto size-10 text-destructive" /><h1 className="mt-4 text-xl font-semibold">无法完成支付</h1><p className="mt-2 text-sm leading-6 text-muted">当前无法为您提供支付服务，请联系商家。</p><div className="mt-6 rounded-md border p-3 text-left text-xs text-muted">订单号：<span className="font-mono text-foreground">{data.out_trade_no}</span></div></CardContent></Card>
+      </main>
+    );
+  }
   const checkoutExpired = now >= Date.parse(data.expires_at);
   const monitoringEnded = now >= Date.parse(data.monitor_until);
 
