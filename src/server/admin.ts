@@ -47,6 +47,17 @@ import {
 } from "./merchants";
 import { notificationHistory, queueManualNotification } from "./notifications";
 import {
+  WITHDRAWAL_STATUSES,
+  getMerchantBalance,
+  getWithdrawalSettings,
+  listWithdrawals,
+  markWithdrawalPaid,
+  pendingWithdrawalSummary,
+  rejectWithdrawal,
+  updateWithdrawalSettings,
+} from "./withdrawals";
+import type { WithdrawalStatus } from "../shared/contracts";
+import {
   candidatePaymentsForOrder,
   countUnmatchedPayments,
   getOrderById,
@@ -61,6 +72,7 @@ import {
 import { sendTelegramMessage, telegramConfig } from "./telegram";
 import {
   generateRsaKeyPair,
+  parseMoneyToCents,
   sha256,
   validatePrivateKey,
   validatePublicKey,
@@ -247,6 +259,7 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
       notify_failed_count: notifyFailed,
       unmatched_payment_count: countUnmatchedPayments(database),
       merchant_count: listMerchants(database).length,
+      pending_withdrawal_count: pendingWithdrawalSummary(database).count,
       last_scan: lastScan,
       recent_orders: recentOrders,
       configured: isGatewayReady(database),
@@ -530,7 +543,7 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
   // ---------- Merchants ----------
 
   app.get("/merchants", (c) => c.json({
-    data: listMerchants(database).map((merchant) => serializeMerchant(database, merchant, true)),
+    data: listMerchants(database).map((merchant) => ({ ...serializeMerchant(database, merchant, true), balance: getMerchantBalance(database, merchant) })),
     totals: merchantStats(database),
   }));
 
@@ -557,7 +570,9 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     assert(merchant, 404, "MERCHANT_NOT_FOUND", "商户不存在");
     return c.json({
       merchant: serializeMerchant(database, merchant, true),
+      balance: getMerchantBalance(database, merchant),
       recent_orders: listOrders(database, { pid: merchant.pid, limit: 10 }).data,
+      recent_withdrawals: listWithdrawals(database, { merchantId: merchant.id, limit: 10 }).data,
     });
   });
 
@@ -614,6 +629,54 @@ export function createAdminRoutes(database: AppDatabase, scanner: PaymentScanner
     setMerchantV2PublicKey(database, c.req.param("id"), publicKey);
     audit(database, "merchant.v2_import", { actor: c.get("admin").username, targetType: "merchant", targetId: c.req.param("id") });
     return c.json({ ok: true });
+  });
+
+  // ---------- Withdrawals ----------
+
+  app.get("/withdrawals", (c) => {
+    const status = c.req.query("status") as WithdrawalStatus | undefined;
+    assert(!status || WITHDRAWAL_STATUSES.includes(status), 400, "INVALID_STATUS", "状态筛选值无效");
+    const page = Math.max(1, Number(c.req.query("page") ?? 1) || 1);
+    const merchantId = c.req.query("merchant_id")?.trim() || undefined;
+    const result = listWithdrawals(database, { status, merchantId, limit: 20, offset: (page - 1) * 20 });
+    return c.json({ ...result, page, pending: pendingWithdrawalSummary(database), settings: getWithdrawalSettings(database) });
+  });
+
+  app.post("/withdrawals/:id/pay", async (c) => {
+    const body = await c.req.json<{ payout_ref?: string; admin_note?: string }>().catch(() => ({} as { payout_ref?: string; admin_note?: string }));
+    const withdrawal = markWithdrawalPaid(database, c.req.param("id"), c.get("admin").username, body.payout_ref, body.admin_note);
+    audit(database, "withdrawal.paid", {
+      actor: c.get("admin").username, targetType: "withdrawal", targetId: withdrawal.id, ip: clientIp(c.req.raw.headers),
+      details: { withdraw_no: withdrawal.withdraw_no, amount_cents: withdrawal.amount_cents, fee_cents: withdrawal.fee_cents, payout_ref: withdrawal.payout_ref },
+    });
+    return c.json({ ok: true, withdrawal });
+  });
+
+  app.post("/withdrawals/:id/reject", async (c) => {
+    const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }));
+    const withdrawal = rejectWithdrawal(database, c.req.param("id"), c.get("admin").username, body.reason ?? "");
+    audit(database, "withdrawal.rejected", {
+      actor: c.get("admin").username, targetType: "withdrawal", targetId: withdrawal.id, ip: clientIp(c.req.raw.headers),
+      details: { withdraw_no: withdrawal.withdraw_no, reason: withdrawal.admin_note },
+    });
+    return c.json({ ok: true, withdrawal });
+  });
+
+  app.get("/withdrawal-settings", (c) => c.json(getWithdrawalSettings(database)));
+
+  app.put("/withdrawal-settings", async (c) => {
+    const body = await c.req.json<{ enabled?: unknown; fee_rate?: unknown; min_amount?: unknown }>().catch(() => ({} as Record<string, unknown>));
+    let minCents: number | undefined;
+    if (body.min_amount !== undefined) {
+      try { minCents = parseMoneyToCents(body.min_amount); } catch (error) { throw new AppError(400, "INVALID_MIN_AMOUNT", error instanceof Error ? error.message : "金额格式错误"); }
+    }
+    const settings = updateWithdrawalSettings(database, {
+      enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
+      feeRateBp: body.fee_rate === undefined ? undefined : parseFeeRate(body.fee_rate),
+      minCents,
+    });
+    audit(database, "settings.withdrawal_update", { actor: c.get("admin").username, details: { ...settings } });
+    return c.json({ ok: true, settings });
   });
 
   app.get("/docs", (c) => c.json({

@@ -1,4 +1,4 @@
-import { BookOpenText, LayoutDashboard, LogOut, Menu, ReceiptText, Store, UserCog } from "lucide-react";
+import { Banknote, BookOpenText, LayoutDashboard, LogOut, Menu, ReceiptText, Store, UserCog } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { Navigate, NavLink, Outlet, useNavigate } from "react-router-dom";
 import useSWR, { mutate } from "swr";
@@ -12,6 +12,7 @@ import { cn } from "@/web/lib/utils";
 const navigation = [
   { to: "/merchant/dashboard", label: "数据概览", icon: LayoutDashboard },
   { to: "/merchant/orders", label: "订单", icon: ReceiptText },
+  { to: "/merchant/withdrawals", label: "提现", icon: Banknote },
   { to: "/merchant/api", label: "API 对接", icon: BookOpenText },
   { to: "/merchant/account", label: "账户设置", icon: UserCog },
 ];

@@ -2,7 +2,7 @@ import { ArrowLeft, ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import useSWR from "swr";
-import type { ApiVersion, MerchantStats, MerchantSummary, OrderStatus } from "@/shared/contracts";
+import type { ApiVersion, MerchantBalance, MerchantStats, MerchantSummary, OrderStatus } from "@/shared/contracts";
 import { swrFetcher } from "@/web/api";
 import { MerchantStatsGrid } from "@/web/components/merchant-stats";
 import { PageHeader } from "@/web/components/page-header";
@@ -64,11 +64,19 @@ function OrdersTable({ orders }: { orders: MerchantOrder[] }) {
 }
 
 export function MerchantDashboardPage() {
-  const { data, isLoading } = useSWR<{ merchant: MerchantSummary; stats: MerchantStats; recent_orders: MerchantOrder[] }>("/merchant-api/dashboard", swrFetcher, { refreshInterval: 10_000 });
+  const { data, isLoading } = useSWR<{ merchant: MerchantSummary; stats: MerchantStats; balance: MerchantBalance; recent_orders: MerchantOrder[] }>("/merchant-api/dashboard", swrFetcher, { refreshInterval: 10_000 });
   if (isLoading || !data) return <Loading label="正在汇总数据" />;
   return (
     <>
       <PageHeader title="数据概览" description={`当前手续费率 ${data.merchant.fee_rate}%。金额按下单金额统计，“应得”为扣除手续费后的金额。`} />
+      <div className="mb-6 flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
+          <div><span className="text-muted">可用余额 </span><span className="text-lg font-semibold text-primary">{formatMoney(data.balance.available_cents)}</span></div>
+          <div><span className="text-muted">冻结中 </span><span className="font-mono">{formatMoney(data.balance.frozen_cents)}</span></div>
+          <div><span className="text-muted">已提现 </span><span className="font-mono">{formatMoney(data.balance.withdrawn_cents)}</span></div>
+        </div>
+        <Button asChild size="sm"><Link to="/merchant/withdrawals">申请提现</Link></Button>
+      </div>
       <MerchantStatsGrid stats={data.stats} />
       <Card className="mt-6">
         <CardHeader className="flex-row items-center justify-between">

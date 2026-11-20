@@ -191,6 +191,31 @@ CREATE INDEX IF NOT EXISTS idx_merchant_sessions_expires ON merchant_sessions(ex
 CREATE INDEX IF NOT EXISTS idx_merchant_sessions_merchant ON merchant_sessions(merchant_id);
 `;
 
+const WITHDRAWALS_MIGRATION = `
+CREATE TABLE IF NOT EXISTS withdrawals (
+  id TEXT PRIMARY KEY,
+  withdraw_no TEXT NOT NULL UNIQUE,
+  merchant_id TEXT NOT NULL REFERENCES merchants(id),
+  amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+  fee_rate_bp INTEGER NOT NULL CHECK(fee_rate_bp >= 0 AND fee_rate_bp <= 10000),
+  fee_cents INTEGER NOT NULL CHECK(fee_cents >= 0),
+  total_cents INTEGER NOT NULL CHECK(total_cents = amount_cents + fee_cents),
+  status TEXT NOT NULL CHECK(status IN ('pending', 'paid', 'rejected', 'cancelled')),
+  account_type TEXT NOT NULL CHECK(account_type IN ('alipay', 'bank')),
+  account_no TEXT NOT NULL,
+  account_name TEXT NOT NULL,
+  bank_name TEXT NOT NULL DEFAULT '',
+  merchant_note TEXT NOT NULL DEFAULT '',
+  admin_note TEXT NOT NULL DEFAULT '',
+  payout_ref TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  reviewed_at TEXT,
+  reviewed_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_withdrawals_merchant ON withdrawals(merchant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status, created_at DESC);
+`;
+
 const DEFAULT_SETTINGS: Record<string, unknown> = {
   setup_completed: false,
   public_base_url: "",
@@ -208,6 +233,10 @@ const DEFAULT_SETTINGS: Record<string, unknown> = {
   telegram_enabled: false,
   telegram_chat_id: "",
   telegram_api_base: "https://api.telegram.org",
+  withdraw_enabled: true,
+  /** Withdrawal fee charged on top of the requested amount, in basis points (800 = 8%). */
+  withdraw_fee_rate_bp: 800,
+  withdraw_min_cents: 100,
 };
 
 export function createDatabase(path = getRuntimeEnv().databasePath): AppDatabase {
@@ -266,6 +295,17 @@ export function createDatabase(path = getRuntimeEnv().databasePath): AppDatabase
         `).run(crypto.randomUUID(), legacyPid, legacyKey, getSetting<string>(database, "v2_merchant_public_key", ""), now, now);
       }
       database.query("INSERT INTO schema_migrations(version, applied_at) VALUES (4, ?)").run(now);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  if (!database.query("SELECT 1 FROM schema_migrations WHERE version = 5").get()) {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      database.exec(WITHDRAWALS_MIGRATION);
+      database.query("INSERT INTO schema_migrations(version, applied_at) VALUES (5, ?)").run(now);
       database.exec("COMMIT");
     } catch (error) {
       database.exec("ROLLBACK");

@@ -30,6 +30,17 @@ import {
 } from "./merchants";
 import { getOrderById, listOrders } from "./orders";
 import { generateRsaKeyPair, sha256 } from "./security";
+import {
+  WITHDRAWAL_STATUSES,
+  cancelWithdrawal,
+  getMerchantBalance,
+  getWithdrawalSettings,
+  lastWithdrawalAccount,
+  listWithdrawals,
+  maxWithdrawable,
+  requestWithdrawal,
+} from "./withdrawals";
+import type { WithdrawalStatus } from "../shared/contracts";
 
 const loginSchema = z.object({
   username: z.string().min(1).max(32),
@@ -107,6 +118,7 @@ export function createMerchantPortalRoutes(database: AppDatabase) {
     return c.json({
       merchant: serializeMerchant(database, merchant),
       stats: merchantStats(database, merchant.pid),
+      balance: getMerchantBalance(database, merchant),
       recent_orders: listOrders(database, { pid: merchant.pid, limit: 8 }).data.map(merchantOrderView),
     });
   });
@@ -174,6 +186,50 @@ export function createMerchantPortalRoutes(database: AppDatabase) {
     setMerchantV2PublicKey(database, merchant.id, publicKey);
     audit(database, "merchant.v2_import", { actor: `merchant:${merchant.username}`, targetType: "merchant", targetId: merchant.id });
     return c.json({ ok: true });
+  });
+
+  app.get("/withdrawals", (c) => {
+    const merchant = c.get("merchant");
+    const status = c.req.query("status") as WithdrawalStatus | undefined;
+    assert(!status || WITHDRAWAL_STATUSES.includes(status), 400, "INVALID_STATUS", "状态筛选值无效");
+    const page = Math.max(1, Number(c.req.query("page") ?? 1) || 1);
+    const settings = getWithdrawalSettings(database);
+    const balance = getMerchantBalance(database, merchant);
+    const result = listWithdrawals(database, { merchantId: merchant.id, status, limit: 20, offset: (page - 1) * 20 });
+    return c.json({
+      ...result,
+      page,
+      balance,
+      settings,
+      max_amount_cents: maxWithdrawable(balance.available_cents, settings.fee_rate_bp),
+      last_account: lastWithdrawalAccount(database, merchant.id),
+    });
+  });
+
+  app.post("/withdrawals", async (c) => {
+    const merchant = c.get("merchant");
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+    const text = (key: string) => (typeof body[key] === "string" || typeof body[key] === "number" ? String(body[key]) : "");
+    const withdrawal = requestWithdrawal(database, merchant, {
+      amount: text("amount"),
+      accountType: text("account_type"),
+      accountNo: text("account_no"),
+      accountName: text("account_name"),
+      bankName: text("bank_name"),
+      note: text("note"),
+    });
+    audit(database, "withdrawal.request", {
+      actor: `merchant:${merchant.username}`, targetType: "withdrawal", targetId: withdrawal.id, ip: clientIp(c.req.raw.headers),
+      details: { withdraw_no: withdrawal.withdraw_no, amount_cents: withdrawal.amount_cents, fee_cents: withdrawal.fee_cents },
+    });
+    return c.json({ ok: true, withdrawal, balance: getMerchantBalance(database, merchant) }, 201);
+  });
+
+  app.post("/withdrawals/:id/cancel", (c) => {
+    const merchant = c.get("merchant");
+    const withdrawal = cancelWithdrawal(database, c.req.param("id"), merchant.id);
+    audit(database, "withdrawal.cancel", { actor: `merchant:${merchant.username}`, targetType: "withdrawal", targetId: withdrawal.id });
+    return c.json({ ok: true, withdrawal, balance: getMerchantBalance(database, merchant) });
   });
 
   app.put("/password", async (c) => {

@@ -1,5 +1,6 @@
 import {
   Activity,
+  Banknote,
   BookOpenText,
   CircleAlert,
   KeyRound,
@@ -25,6 +26,7 @@ const navigation = [
   { to: "/orders", label: "订单", icon: ReceiptText },
   { to: "/payments", label: "未匹配收款", icon: CircleAlert },
   { to: "/merchants", label: "商户管理", icon: Store },
+  { to: "/withdrawals", label: "提现管理", icon: Banknote },
   { to: "/settings", label: "收款配置", icon: Settings2 },
   { to: "/keys", label: "密钥中心", icon: KeyRound },
   { to: "/docs", label: "API 文档", icon: BookOpenText },
@@ -34,7 +36,10 @@ const navigation = [
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const navigate = useNavigate();
   const { data: dashboard } = useSWR<DashboardData>("/admin-api/dashboard", swrFetcher, { refreshInterval: 15_000 });
-  const unmatched = dashboard?.unmatched_payment_count ?? 0;
+  const badges: Record<string, number> = {
+    "/payments": dashboard?.unmatched_payment_count ?? 0,
+    "/withdrawals": dashboard?.pending_withdrawal_count ?? 0,
+  };
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-16 items-center gap-3 border-b px-5">
@@ -57,7 +62,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           >
             <item.icon className="size-4" />
             {item.label}
-            {item.to === "/payments" && unmatched > 0 ? <span className="ml-auto rounded-full bg-destructive px-1.5 text-xs leading-5 text-background">{unmatched}</span> : null}
+            {badges[item.to] ? <span className="ml-auto rounded-full bg-destructive px-1.5 text-xs leading-5 text-background">{badges[item.to]}</span> : null}
           </NavLink>
         ))}
       </nav>

@@ -16,6 +16,8 @@ import { MerchantLoginPage } from "@/web/pages/merchant/login";
 import { MerchantDashboardPage, MerchantOrderDetailPage, MerchantOrdersPage } from "@/web/pages/merchant/orders";
 import { MerchantDetailPage } from "@/web/pages/merchant-detail";
 import { MerchantsPage } from "@/web/pages/merchants";
+import { MerchantWithdrawalsPage } from "@/web/pages/merchant/withdrawals";
+import { WithdrawalsPage } from "@/web/pages/withdrawals";
 import { OrderDetailPage } from "@/web/pages/order-detail";
 import { OrdersPage } from "@/web/pages/orders";
 import { PaymentsPage } from "@/web/pages/payments";
@@ -51,6 +53,7 @@ export function App() {
         <Route path="/payments" element={<PaymentsPage />} />
         <Route path="/merchants" element={<MerchantsPage />} />
         <Route path="/merchants/:id" element={<MerchantDetailPage />} />
+        <Route path="/withdrawals" element={<WithdrawalsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/keys" element={<KeyCenterPage />} />
         <Route path="/docs" element={<DocsPage />} />
@@ -62,6 +65,7 @@ export function App() {
         <Route path="/merchant/dashboard" element={<MerchantDashboardPage />} />
         <Route path="/merchant/orders" element={<MerchantOrdersPage />} />
         <Route path="/merchant/orders/:id" element={<MerchantOrderDetailPage />} />
+        <Route path="/merchant/withdrawals" element={<MerchantWithdrawalsPage />} />
         <Route path="/merchant/api" element={<MerchantApiPage />} />
         <Route path="/merchant/account" element={<MerchantAccountPage />} />
       </Route>

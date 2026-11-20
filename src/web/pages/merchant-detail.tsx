@@ -3,7 +3,8 @@ import { type FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import useSWR from "swr";
 import { toast } from "sonner";
-import type { MerchantSummary, OrderRecord } from "@/shared/contracts";
+import type { MerchantBalance, MerchantSummary, OrderRecord, WithdrawalRecord } from "@/shared/contracts";
+import { BalanceCards, WithdrawalStatusBadge } from "@/web/components/withdrawal-parts";
 import { apiFetch, jsonBody, swrFetcher } from "@/web/api";
 import { MerchantKeysPanel } from "@/web/components/merchant-keys";
 import { MerchantStatsGrid } from "@/web/components/merchant-stats";
@@ -21,7 +22,9 @@ import { formatDate, formatMoney } from "@/web/lib/utils";
 
 interface DetailResponse {
   merchant: MerchantSummary;
+  balance: MerchantBalance;
   recent_orders: OrderRecord[];
+  recent_withdrawals: WithdrawalRecord[];
 }
 
 function ProfileForm({ merchant, onSaved }: { merchant: MerchantSummary; onSaved: () => unknown }) {
@@ -115,6 +118,8 @@ export function MerchantDetailPage() {
       />
 
       <MerchantStatsGrid stats={merchant.stats!} />
+      <h2 className="mb-3 mt-6 text-sm font-medium text-muted">余额</h2>
+      <BalanceCards balance={data.balance} />
 
       <div className="mt-6 grid gap-6 xl:grid-cols-[420px_1fr]">
         <ProfileForm merchant={merchant} onSaved={mutate} />
@@ -142,6 +147,30 @@ export function MerchantDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="mt-6">
+        <CardHeader className="flex-row items-center justify-between"><CardTitle>最近提现</CardTitle><Button asChild variant="ghost" size="sm"><Link to="/withdrawals">提现管理</Link></Button></CardHeader>
+        <CardContent>
+          {data.recent_withdrawals.length === 0 ? <div className="py-8 text-center text-sm text-muted">暂无提现记录</div> : (
+            <div className="overflow-x-auto scrollbar-thin">
+              <table className="w-full min-w-[560px] text-left text-sm">
+                <thead className="border-b text-xs text-muted"><tr><th className="pb-3 font-medium">申请单号</th><th className="pb-3 font-medium">打款金额</th><th className="pb-3 font-medium">手续费</th><th className="pb-3 font-medium">状态</th><th className="pb-3 text-right font-medium">申请时间</th></tr></thead>
+                <tbody className="divide-y">
+                  {data.recent_withdrawals.map((withdrawal) => (
+                    <tr key={withdrawal.id}>
+                      <td className="py-3 font-mono text-xs">{withdrawal.withdraw_no}</td>
+                      <td className="py-3 font-mono">{formatMoney(withdrawal.amount_cents)}</td>
+                      <td className="py-3 font-mono text-muted">{formatMoney(withdrawal.fee_cents)}</td>
+                      <td className="py-3"><WithdrawalStatusBadge status={withdrawal.status} /></td>
+                      <td className="py-3 text-right text-xs text-muted">{formatDate(withdrawal.created_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <h2 className="mb-3 mt-8 text-base font-semibold">接口密钥</h2>
       <MerchantKeysPanel base={`/admin-api/merchants/${merchant.id}`} merchant={merchant} onChange={mutate} />

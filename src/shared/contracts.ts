@@ -42,6 +42,7 @@ export interface DashboardData {
   today_paid_cents: number;
   today_fee_cents: number;
   merchant_count: number;
+  pending_withdrawal_count: number;
   pending_count: number;
   late_paid_count: number;
   notify_failed_count: number;
@@ -139,4 +140,50 @@ export interface MerchantSummary {
   created_at: string;
   updated_at: string;
   stats?: MerchantStats;
+}
+
+export type WithdrawalStatus = "pending" | "paid" | "rejected" | "cancelled";
+export type WithdrawalAccountType = "alipay" | "bank";
+
+/** All amounts in cents. available = income − withdrawn − frozen. */
+export interface MerchantBalance {
+  /** Net income from paid orders (order amount − order fee). */
+  income_cents: number;
+  /** Amount + fee of pending withdrawals. */
+  frozen_cents: number;
+  /** Amount + fee of paid-out withdrawals. */
+  withdrawn_cents: number;
+  available_cents: number;
+}
+
+export interface WithdrawalSettings {
+  enabled: boolean;
+  fee_rate_bp: number;
+  /** Percent string, e.g. "8". */
+  fee_rate: string;
+  min_cents: number;
+}
+
+export interface WithdrawalRecord {
+  id: string;
+  withdraw_no: string;
+  merchant_id: string;
+  merchant_name?: string;
+  merchant_pid?: string;
+  /** What the merchant receives. */
+  amount_cents: number;
+  fee_rate_bp: number;
+  fee_cents: number;
+  /** amount + fee: frozen while pending, deducted once paid. */
+  total_cents: number;
+  status: WithdrawalStatus;
+  account_type: WithdrawalAccountType;
+  account_no: string;
+  account_name: string;
+  bank_name: string;
+  merchant_note: string;
+  admin_note: string;
+  payout_ref: string;
+  created_at: string;
+  reviewed_at: string | null;
 }

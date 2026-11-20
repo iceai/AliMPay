@@ -3,7 +3,7 @@ import { type ChangeEvent, type FormEvent, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import useSWR from "swr";
 import { toast } from "sonner";
-import type { MerchantStats, MerchantSummary } from "@/shared/contracts";
+import type { MerchantBalance, MerchantStats, MerchantSummary } from "@/shared/contracts";
 import { apiFetch, jsonBody, swrFetcher } from "@/web/api";
 import { MerchantStatsGrid } from "@/web/components/merchant-stats";
 import { PageHeader } from "@/web/components/page-header";
@@ -18,7 +18,7 @@ import { DisclosureDialog, type KeyDisclosure } from "@/web/pages/keys";
 import { formatDate, formatMoney } from "@/web/lib/utils";
 
 interface MerchantsResponse {
-  data: MerchantSummary[];
+  data: Array<MerchantSummary & { balance: MerchantBalance }>;
   totals: MerchantStats;
 }
 
@@ -100,9 +100,9 @@ export function MerchantsPage() {
             <div className="flex flex-col items-center gap-3 py-12 text-sm text-muted"><Store className="size-6" />还没有商户<Button size="sm" onClick={() => setCreating(true)}><Plus />新建商户</Button></div>
           ) : (
             <div className="overflow-x-auto scrollbar-thin">
-              <table className="w-full min-w-[900px] text-left text-sm">
+              <table className="w-full min-w-[1100px] text-left text-sm">
                 <thead className="border-b text-xs text-muted">
-                  <tr><th className="pb-3 font-medium">商户</th><th className="pb-3 font-medium">PID</th><th className="pb-3 font-medium">费率</th><th className="pb-3 font-medium">后台登录</th><th className="pb-3 font-medium">今日实收</th><th className="pb-3 font-medium">累计实收</th><th className="pb-3 font-medium">累计手续费</th><th className="pb-3 font-medium">状态</th><th className="pb-3 text-right font-medium">创建时间</th></tr>
+                  <tr><th className="pb-3 font-medium">商户</th><th className="pb-3 font-medium">PID</th><th className="pb-3 font-medium">费率</th><th className="pb-3 font-medium">后台登录</th><th className="pb-3 font-medium">今日实收</th><th className="pb-3 font-medium">累计实收</th><th className="pb-3 font-medium">累计手续费</th><th className="pb-3 font-medium">可用余额</th><th className="pb-3 font-medium">冻结</th><th className="pb-3 font-medium">状态</th><th className="pb-3 text-right font-medium">创建时间</th></tr>
                 </thead>
                 <tbody className="divide-y">
                   {data.data.map((merchant) => (
@@ -114,6 +114,8 @@ export function MerchantsPage() {
                       <td className="py-3 font-mono">{formatMoney(merchant.stats?.today.paid_cents ?? 0)}</td>
                       <td className="py-3 font-mono">{formatMoney(merchant.stats?.total.paid_cents ?? 0)}</td>
                       <td className="py-3 font-mono">{formatMoney(merchant.stats?.total.fee_cents ?? 0)}</td>
+                      <td className="py-3 font-mono font-medium">{formatMoney(merchant.balance.available_cents)}</td>
+                      <td className="py-3 font-mono text-muted">{formatMoney(merchant.balance.frozen_cents)}</td>
                       <td className="py-3"><Badge variant={merchant.status === "active" ? "success" : "danger"}>{merchant.status === "active" ? "正常" : "已禁用"}</Badge></td>
                       <td className="py-3 text-right text-xs text-muted">{formatDate(merchant.created_at)}</td>
                     </tr>
